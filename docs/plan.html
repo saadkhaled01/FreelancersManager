@@ -1,0 +1,405 @@
+<title>Freelancers Manager Plan</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=El+Messiri:wght@500;600;700&family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap">
+<style>
+  /* Layout: Sorah Rent system carried over — warm paper ground, white rounded panels, green accent, status stripes; plan reads top-down, with one live mock of the Projects screen */
+  :root{
+    --bg:#EEEBE3; --surface:#FFFFFF; --surface-2:#F7F4EC;
+    --ink:#221E19; --muted:#77705F; --line:#DFD9C8;
+    --accent:#1E6F5C; --accent-ink:#FFFFFF; --accent-soft:#DCEEE7;
+    --amber:#B9761F; --amber-soft:#F3E4CC;
+    --danger:#B23A2E; --danger-soft:#F5DCD7;
+    --success:#2E7D52; --success-soft:#DCEEDF;
+    --wa:#1FA855; --wa-ink:#FFFFFF;
+    --shadow:0 1px 2px rgba(34,30,25,.06), 0 6px 20px -8px rgba(34,30,25,.18);
+    --radius:14px;
+    --f-display:"El Messiri","IBM Plex Sans Arabic",Georgia,serif;
+    --f-body:"IBM Plex Sans Arabic","IBM Plex Sans",system-ui,sans-serif;
+    --f-mono:"IBM Plex Mono",ui-monospace,monospace;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#15181A; --surface:#1D2320; --surface-2:#232925;
+      --ink:#F3EFE6; --muted:#CFC8B8; --line:#3A433C;
+      --accent:#4FB89B; --accent-ink:#0D1512; --accent-soft:#213631;
+      --amber:#E2A23D; --amber-soft:#3A2E19;
+      --danger:#E2685A; --danger-soft:#3B211D;
+      --success:#5FCB90; --success-soft:#1D3427;
+      --wa:#25C063; --wa-ink:#06160C;
+      --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 26px -10px rgba(0,0,0,.5);
+      color-scheme:dark;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#15181A; --surface:#1D2320; --surface-2:#232925;
+    --ink:#F3EFE6; --muted:#CFC8B8; --line:#3A433C;
+    --accent:#4FB89B; --accent-ink:#0D1512; --accent-soft:#213631;
+    --amber:#E2A23D; --amber-soft:#3A2E19;
+    --danger:#E2685A; --danger-soft:#3B211D;
+    --success:#5FCB90; --success-soft:#1D3427;
+    --wa:#25C063; --wa-ink:#06160C;
+    --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 26px -10px rgba(0,0,0,.5);
+    color-scheme:dark;
+  }
+
+  *{box-sizing:border-box;}
+  html{overflow-x:hidden;}
+  body{
+    background:var(--bg); color:var(--ink); font-family:var(--f-body); font-size:14.5px; line-height:1.6;
+    padding-left:max(16px, env(safe-area-inset-left, 0px)); padding-right:max(16px, env(safe-area-inset-right, 0px));
+    padding-block:22px 64px; overflow-wrap:break-word;
+  }
+  h1,h2,h3{font-family:var(--f-display); text-wrap:balance; line-height:1.25; margin:0;}
+  p{margin:0;}
+  .mono{font-family:var(--f-mono); font-variant-numeric:tabular-nums;}
+  :focus-visible{outline:2px solid var(--accent); outline-offset:2px;}
+  .wrap{max-width:980px; margin-inline:auto; display:flex; flex-direction:column; gap:22px;}
+
+  .topbar{display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;}
+  .brand{display:flex; align-items:center; gap:10px;}
+  .mark{width:38px; height:38px; border-radius:10px; background:var(--ink); color:var(--bg); display:flex; align-items:center; justify-content:center; font-family:var(--f-display); font-weight:700; font-size:17px; flex:none;}
+  .brand h1{font-size:19px; font-weight:700;}
+  .brand p{font-size:12.5px; color:var(--muted);}
+  .icon-btn{border:1px solid var(--line); background:var(--surface); color:var(--muted); border-radius:10px; width:38px; height:38px; display:flex; align-items:center; justify-content:center; cursor:pointer; font-size:16px;}
+
+  .intro{display:flex; flex-direction:column; gap:10px; max-width:68ch;}
+  .intro h2{font-size:28px;}
+  .intro p{color:var(--muted); font-size:15px;}
+
+  .banner{border-radius:var(--radius); padding:12px 14px; font-size:13.5px; background:var(--amber-soft); border:1px solid var(--amber);}
+  .banner b{color:var(--amber);}
+
+  .panel{background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow); padding:18px; display:flex; flex-direction:column; gap:14px; min-width:0;}
+  .panel-head{display:flex; align-items:baseline; justify-content:space-between; gap:8px; flex-wrap:wrap;}
+  .panel-head h2{font-size:19px;}
+  .hint{font-size:12px; color:var(--muted);}
+  .lead{color:var(--muted); max-width:68ch;}
+
+  .badge{font-size:11.5px; font-weight:700; padding:2px 10px; border-radius:999px; white-space:nowrap; display:inline-block; line-height:1.6;}
+  .badge.bad{background:var(--danger-soft); color:var(--danger);}
+  .badge.warn{background:var(--amber-soft); color:var(--amber);}
+  .badge.good{background:var(--success-soft); color:var(--success);}
+  .badge.acc{background:var(--accent-soft); color:var(--accent);}
+  .badge.muted{background:var(--surface-2); color:var(--muted); border:1px solid var(--line);}
+
+  .table-wrap{overflow-x:auto;}
+  table{width:100%; border-collapse:collapse; font-size:13px;}
+  th{text-align:start; color:var(--muted); font-weight:600; padding:6px 10px; border-bottom:1px solid var(--line); white-space:nowrap; font-size:12px;}
+  td{padding:9px 10px; border-bottom:1px solid var(--line); vertical-align:top;}
+  tr:last-child td{border-bottom:none;}
+  td b{font-weight:600;}
+
+  .principles{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px;}
+  @media (max-width:640px){ .principles{grid-template-columns:1fr;} }
+  .pr{background:var(--surface-2); border:1px solid var(--line); border-radius:12px; padding:12px 14px; display:flex; flex-direction:column; gap:4px;}
+  .pr b{font-size:14px;}
+  .pr span{font-size:13px; color:var(--muted);}
+  .swatches{display:flex; gap:8px; flex-wrap:wrap;}
+  .sw{display:flex; align-items:center; gap:6px; font-size:12px; color:var(--muted); border:1px solid var(--line); border-radius:999px; padding:3px 10px 3px 4px; background:var(--surface);}
+  .sw i{width:18px; height:18px; border-radius:50%; border:1px solid var(--line); display:block;}
+
+  /* status flow */
+  .flow{display:flex; flex-wrap:wrap; gap:6px; align-items:center;}
+  .flow .arrow{color:var(--muted); font-size:13px;}
+
+  /* screens list */
+  .screens{display:grid; grid-template-columns:repeat(auto-fill,minmax(250px,1fr)); gap:12px;}
+  .scr{border:1px solid var(--line); border-radius:12px; padding:14px; display:flex; flex-direction:column; gap:6px; background:var(--surface);}
+  .scr h3{font-size:16px;}
+  .scr .ar{font-family:var(--f-body); font-size:12.5px; color:var(--accent); direction:rtl; text-align:start;}
+  .scr ul{margin:0; padding-inline-start:18px; font-size:13px; color:var(--ink); display:flex; flex-direction:column; gap:3px;}
+
+  /* mock: the actual Projects screen in RTL */
+  .mock{direction:rtl; background:var(--bg); border:1px solid var(--line); border-radius:18px; padding:16px; display:flex; flex-direction:column; gap:12px; min-width:0;}
+  .mock .mtop{display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;}
+  .mock .mtop h3{font-size:20px;}
+  .btn{appearance:none; border:1px solid transparent; border-radius:10px; font-weight:600; font-size:13px; padding:8px 14px; display:inline-flex; align-items:center; gap:6px; white-space:nowrap; font-family:inherit; cursor:pointer; text-decoration:none;}
+  .btn-primary{background:var(--accent); color:var(--accent-ink);}
+  .btn-ghost{background:var(--surface); color:var(--ink); border-color:var(--line);}
+  .btn-wa{background:var(--wa); color:var(--wa-ink);}
+  .btn-sm{padding:5px 10px; font-size:12px; border-radius:8px;}
+  .kpis{display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px;}
+  @media (max-width:700px){ .kpis{grid-template-columns:repeat(2,minmax(0,1fr));} }
+  .kpi{background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); padding:12px 14px;}
+  .kpi .n{font-family:var(--f-mono); font-size:22px; font-weight:600; line-height:1.1;}
+  .kpi .n small{font-family:var(--f-body); font-size:11px; color:var(--muted); font-weight:500;}
+  .kpi .l{font-size:12px; color:var(--muted); margin-top:4px;}
+  .kpi.warn .n{color:var(--amber);} .kpi.bad .n{color:var(--danger);}
+  .chips{display:flex; gap:6px; flex-wrap:wrap;}
+  .chip{border:1px solid var(--line); background:var(--surface); color:var(--muted); border-radius:999px; padding:5px 12px; font-size:12.5px; font-weight:600; cursor:pointer; font-family:inherit;}
+  .chip[aria-pressed="true"]{background:var(--ink); color:var(--bg); border-color:var(--ink);}
+  .list{display:flex; flex-direction:column; gap:8px;}
+  .pj{background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow); padding:12px 14px; display:flex; gap:12px;}
+  .pj .stripe{width:4px; border-radius:4px; flex:none;}
+  .pj .main{flex:1; min-width:0; display:flex; flex-direction:column; gap:6px;}
+  .pj .r1{display:flex; align-items:center; gap:8px; flex-wrap:wrap;}
+  .pj .who{font-weight:700; font-size:14.5px;}
+  .pj .client{font-size:12.5px; color:var(--muted);}
+  .pj .r2{display:flex; gap:14px; flex-wrap:wrap; font-size:12px; color:var(--muted);}
+  .pj .r2 b{color:var(--ink); font-weight:600;}
+  .pay{display:flex; align-items:center; gap:10px; font-size:12px; color:var(--muted);}
+  .bar{flex:1; max-width:220px; height:6px; border-radius:999px; background:var(--surface-2); border:1px solid var(--line); overflow:hidden;}
+  .bar i{display:block; height:100%; background:var(--success); border-radius:999px;}
+  .pj .acts{display:flex; gap:6px; flex-wrap:wrap;}
+  .empty{border:1px dashed var(--line); border-radius:var(--radius); padding:24px 16px; text-align:center; color:var(--muted); font-size:13px; background:var(--surface-2);}
+  .empty b{color:var(--ink); display:block; font-size:14px;}
+
+  /* milestones */
+  .ms{display:flex; flex-direction:column; gap:10px;}
+  .m{display:grid; grid-template-columns:96px 1fr; gap:14px; align-items:start; padding-block:10px; border-top:1px dashed var(--line);}
+  .m:first-child{border-top:none; padding-top:0;}
+  .m .when{font-family:var(--f-mono); font-size:12px; color:var(--accent); font-weight:600;}
+  .m h3{font-size:15.5px; margin-bottom:4px;}
+  .m ul{margin:0; padding-inline-start:18px; font-size:13px; display:flex; flex-direction:column; gap:2px;}
+  .m .done{font-size:12.5px; color:var(--muted); margin-top:6px;}
+  @media (max-width:520px){ .m{grid-template-columns:1fr; gap:4px;} }
+
+  .two{display:grid; grid-template-columns:1fr 1fr; gap:14px;}
+  @media (max-width:720px){ .two{grid-template-columns:1fr;} }
+  .plain{margin:0; padding-inline-start:18px; display:flex; flex-direction:column; gap:5px; font-size:13.5px;}
+  .plain li::marker{color:var(--muted);}
+  code{font-family:var(--f-mono); font-size:12.5px; background:var(--surface-2); border:1px solid var(--line); border-radius:6px; padding:0 5px;}
+  @media (prefers-reduced-motion: reduce){ *{transition:none !important;} }
+</style>
+
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand">
+      <div class="mark">F</div>
+      <div>
+        <h1>Freelancers Manager</h1>
+        <p>Build plan · a smaller Sorah Ops for one person</p>
+      </div>
+    </div>
+    <button class="icon-btn" id="themeBtn" aria-label="Toggle light and dark">☾</button>
+  </header>
+
+  <section class="intro">
+    <h2>One screen that tells a freelancer what's due, what's owed, and who to message next.</h2>
+    <p>Sorah Ops runs a whole production company. This is the solo version: projects, clients, deliverables and payments. It drops crew, equipment and team permissions. It uses the same design system as Sorah Rent, with Arabic-first RTL, EGP, WhatsApp as the main channel and InstaPay / Vodafone Cash payments.</p>
+  </section>
+
+  <div class="banner"><b>Note on the reference.</b> This cloud session couldn't open sorah-ops-production.up.railway.app. It has no access to your Chrome, and the network proxy blocks the host. The Sorah Ops comparison below assumes the modules an agency ops tool usually has. Check that table first and tell me what Ops actually has, and I'll adjust the scope.</div>
+
+  <!-- 1. Scope -->
+  <section class="panel">
+    <div class="panel-head"><h2>Scope: what shrinks, what stays</h2><span class="hint">Ops column is assumed</span></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Sorah Ops (team)</th><th>Freelancers Manager (solo)</th><th>Call</th></tr></thead>
+        <tbody>
+          <tr><td>Projects with stages, owners, crew</td><td>Projects with one status, a due date, a deliverables checklist and revision rounds</td><td><span class="badge good">Keep, simpler</span></td></tr>
+          <tr><td>Clients / CRM</td><td>Client card: name, WhatsApp number, company, notes, project history, lifetime billed</td><td><span class="badge good">Keep, simpler</span></td></tr>
+          <tr><td>Tasks per team member</td><td>Deliverables inside a project (e.g. "Reel 3 of 6", "Final 16:9 master")</td><td><span class="badge good">Folded in</span></td></tr>
+          <tr><td>Invoices, finance, expenses</td><td>Quote total + payment milestones (deposit / balance), logged by method and reference</td><td><span class="badge good">Keep, simpler</span></td></tr>
+          <tr><td>Calendar / shoot schedule</td><td>Due dates and shoot days shown on the Today screen; no calendar grid in v1</td><td><span class="badge warn">Later</span></td></tr>
+          <tr><td>Crew, roles, payroll</td><td>Not needed for one person</td><td><span class="badge muted">Cut</span></td></tr>
+          <tr><td>Equipment / inventory</td><td>Sorah Rent already covers this</td><td><span class="badge muted">Cut</span></td></tr>
+          <tr><td>Reports & dashboards</td><td>Four numbers at the top of Projects: active, due this week, owed, overdue</td><td><span class="badge good">Keep, 4 KPIs</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 2. Design philosophy -->
+  <section class="panel">
+    <div class="panel-head"><h2>Design rules carried over from Sorah Rent</h2><span class="hint">Same tokens, same components</span></div>
+    <div class="swatches" aria-label="Palette">
+      <span class="sw"><i style="background:var(--bg)"></i>Paper ground</span>
+      <span class="sw"><i style="background:var(--surface)"></i>White panel</span>
+      <span class="sw"><i style="background:var(--ink)"></i>Ink</span>
+      <span class="sw"><i style="background:var(--accent)"></i>Sorah green</span>
+      <span class="sw"><i style="background:var(--amber)"></i>Waiting</span>
+      <span class="sw"><i style="background:var(--danger)"></i>Overdue</span>
+      <span class="sw"><i style="background:var(--success)"></i>Paid / done</span>
+      <span class="sw"><i style="background:var(--wa)"></i>WhatsApp</span>
+    </div>
+    <div class="principles">
+      <div class="pr"><b>Status is a colour stripe, not a column</b><span>Every project row gets the left stripe and a pill, like booking cards in Rent. You see what needs you without reading.</span></div>
+      <div class="pr"><b>Numbers in Plex Mono</b><span>Money, dates, codes and counts use tabular mono figures. Headings use El Messiri and body text uses Plex Sans Arabic.</span></div>
+      <div class="pr"><b>WhatsApp is the main action</b><span>Each project and client has a "WhatsApp client" button with a pre-filled message (delivery link, payment reminder, quote).</span></div>
+      <div class="pr"><b>Chips to filter, panels to group</b><span>Black-pill chips filter the list. White rounded panels hold forms. Dashed borders mark empty states and soft separators.</span></div>
+      <div class="pr"><b>Bottom sheets on phones</b><span>Add and edit open as a bottom sheet on mobile and a centred modal on desktop, with the same modal head and actions row.</span></div>
+      <div class="pr"><b>Plain Egyptian Arabic copy</b><span>Short, direct labels, with toasts confirming each action (e.g. "اتسجلت الدفعة"). Empty states have a bold line plus one hint.</span></div>
+    </div>
+  </section>
+
+  <!-- 3. Mock -->
+  <section class="panel">
+    <div class="panel-head"><h2>The Projects screen</h2><span class="hint">Example data · filter chips work</span></div>
+    <p class="lead">This is the main screen and where the app opens. Arabic-first and RTL, built from the same components as Rent's admin bookings list.</p>
+    <div class="mock">
+      <div class="mtop">
+        <h3>المشاريع</h3>
+        <div style="display:flex; gap:6px; flex-wrap:wrap">
+          <button class="btn btn-ghost btn-sm" type="button">+ عميل</button>
+          <button class="btn btn-primary btn-sm" type="button">+ مشروع جديد</button>
+        </div>
+      </div>
+      <div class="kpis">
+        <div class="kpi"><div class="n">4</div><div class="l">مشاريع شغالة</div></div>
+        <div class="kpi warn"><div class="n">2</div><div class="l">تسليم الأسبوع ده</div></div>
+        <div class="kpi"><div class="n">22,500 <small>ج.م</small></div><div class="l">فلوس لسه ما اتدفعتش</div></div>
+        <div class="kpi bad"><div class="n">4,500 <small>ج.م</small></div><div class="l">متأخرة</div></div>
+      </div>
+      <div class="chips" id="chips">
+        <button class="chip" data-f="all" aria-pressed="true">الكل</button>
+        <button class="chip" data-f="active" aria-pressed="false">شغال</button>
+        <button class="chip" data-f="review" aria-pressed="false">عند العميل</button>
+        <button class="chip" data-f="unpaid" aria-pressed="false">لسه ما اتدفعش</button>
+        <button class="chip" data-f="lead" aria-pressed="false">عروض أسعار</button>
+      </div>
+      <div class="list" id="plist"></div>
+    </div>
+  </section>
+
+  <!-- 4. Statuses -->
+  <section class="panel">
+    <div class="panel-head"><h2>Project lifecycle</h2><span class="hint">Work status and payment status are tracked separately</span></div>
+    <div class="flow" aria-label="Work status">
+      <span class="badge muted">Lead · عرض سعر</span><span class="arrow">→</span>
+      <span class="badge acc">Active · شغال</span><span class="arrow">→</span>
+      <span class="badge warn">With client · عند العميل</span><span class="arrow">⇄</span>
+      <span class="badge acc">Revising · تعديلات</span><span class="arrow">→</span>
+      <span class="badge good">Delivered · اتسلم</span><span class="arrow">→</span>
+      <span class="badge muted">Archived</span>
+    </div>
+    <div class="flow" aria-label="Payment status">
+      <span class="badge muted">No deposit</span><span class="arrow">→</span>
+      <span class="badge warn">Deposit paid</span><span class="arrow">→</span>
+      <span class="badge good">Paid in full</span>
+      <span class="hint" style="margin-inline-start:6px">Overdue <span class="badge bad">متأخر</span> when a payment's due date has passed and it's still unpaid.</span>
+    </div>
+    <p class="lead">Revision rounds are counted (for example "Round 2 of 3"). Going from "With client" back to "Revising" adds a round. Going past the agreed number flags the project, so extra rounds can be billed.</p>
+  </section>
+
+  <!-- 5. Screens -->
+  <section class="panel">
+    <div class="panel-head"><h2>Screens (v1)</h2><span class="hint">Five views, one modal pattern</span></div>
+    <div class="screens">
+      <div class="scr"><h3>Projects</h3><div class="ar">المشاريع</div><ul><li>4 KPIs, filter chips, search</li><li>Cards sorted by next due date</li><li>Quick actions: WhatsApp, log payment, mark delivered</li></ul></div>
+      <div class="scr"><h3>Project detail</h3><div class="ar">تفاصيل المشروع</div><ul><li>Deliverables checklist</li><li>Revision rounds, delivery links (Drive / Frame.io)</li><li>Payments with method + reference</li><li>Notes and an activity log</li></ul></div>
+      <div class="scr"><h3>Today</h3><div class="ar">النهارده</div><ul><li>Due today / this week</li><li>Payments to chase, oldest first</li><li>Quotes with no reply for more than 3 days</li></ul></div>
+      <div class="scr"><h3>Clients</h3><div class="ar">العملاء</div><ul><li>Name, WhatsApp, company, notes</li><li>Lifetime billed / owed</li><li>Project history</li></ul></div>
+      <div class="scr"><h3>Money</h3><div class="ar">الفلوس</div><ul><li>Month view: received vs. owed</li><li>Payment log, filter by method</li><li>Quote / invoice view to screenshot and send</li></ul></div>
+      <div class="scr"><h3>Settings</h3><div class="ar">الإعدادات</div><ul><li>Your name, InstaPay IPA, Vodafone Cash number</li><li>WhatsApp message templates</li><li>Default deposit %, revision rounds</li><li>Export / import JSON</li></ul></div>
+    </div>
+  </section>
+
+  <!-- 6. Data model -->
+  <section class="panel">
+    <div class="panel-head"><h2>Data model</h2><span class="hint">Five records</span></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Record</th><th>Fields</th></tr></thead>
+        <tbody>
+          <tr><td><b>Client</b></td><td><code>id, name, phone, company, notes, createdAt</code></td></tr>
+          <tr><td><b>Project</b></td><td><code>id, code (FM-1042), clientId, title, type, status, startDate, dueDate, fee, currency, depositPct, revisionsAllowed, revisionsUsed, deliveryLinks[], notes</code></td></tr>
+          <tr><td><b>Deliverable</b></td><td><code>id, projectId, label, dueDate, done</code></td></tr>
+          <tr><td><b>Payment</b></td><td><code>id, projectId, label (deposit / balance / extra), amount, dueDate, paidAt, method (instapay / vcash / cash / bank), ref</code></td></tr>
+          <tr><td><b>Activity</b></td><td><code>id, projectId, at, kind, text</code>: append-only log for "sent v2", "paid deposit", "round 3 started"</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="lead">Owed, overdue, payment status and the KPIs are all calculated from these records. None of them are stored, so they can't fall out of sync.</p>
+  </section>
+
+  <!-- 7. Flows -->
+  <section class="panel">
+    <div class="panel-head"><h2>Flows that must feel fast</h2><span class="hint">Target: each in under 30 seconds on a phone</span></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Flow</th><th>Steps</th></tr></thead>
+        <tbody>
+          <tr><td><b>New project</b></td><td>Pick or create a client → title, fee, due date → deposit and balance payments are generated from the defaults.</td></tr>
+          <tr><td><b>Send a quote</b></td><td>"WhatsApp client" opens a pre-filled message: scope, fee, deposit, payment details.</td></tr>
+          <tr><td><b>Log a payment</b></td><td>Tap the payment → method + reference → toast, KPIs update.</td></tr>
+          <tr><td><b>Send a version</b></td><td>Paste the delivery link → status becomes "With client" → WhatsApp message with the link.</td></tr>
+          <tr><td><b>Chase money</b></td><td>Today → "Payments to chase" → one tap sends a polite reminder with the amount and payment details.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 8. Tech -->
+  <section class="two">
+    <div class="panel">
+      <h2 style="font-size:19px">Build approach</h2>
+      <ul class="plain">
+        <li><b>Front end:</b> vanilla JS + one CSS file, structured like Sorah Rent: state object, render functions, <code>data-act</code> event delegation. No framework.</li>
+        <li><b>v1 storage:</b> IndexedDB on the device, plus JSON export/import as a backup. It works offline as an installable PWA.</li>
+        <li><b>v2 sync:</b> small Node API + Postgres on Railway (same host as Sorah Ops), with one login per freelancer. Local data uploads on first sign-in.</li>
+        <li><b>Repo layout:</b> <code>app/</code> (index.html, app.css, app.js, sw.js), <code>server/</code> added in v2, <code>docs/</code> for this plan.</li>
+      </ul>
+    </div>
+    <div class="panel">
+      <h2 style="font-size:19px">Not in v1</h2>
+      <ul class="plain">
+        <li>Team members, roles, permissions</li>
+        <li>Calendar grid and Google Calendar sync</li>
+        <li>Time tracking and hourly billing</li>
+        <li>Generated PDF invoices (v1 shows an invoice view to screenshot)</li>
+        <li>Client portal or client logins</li>
+        <li>Expenses and profit reports</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 9. Milestones -->
+  <section class="panel">
+    <div class="panel-head"><h2>Milestones</h2><span class="hint">Each one ships something usable</span></div>
+    <div class="ms">
+      <div class="m"><div class="when">Week 1</div><div><h3>Projects + clients, on device</h3><ul><li>Tokens, layout shell, theme toggle, RTL</li><li>Projects list with KPIs, chips and search; add/edit sheet</li><li>Clients list and card</li><li>IndexedDB storage, JSON export/import</li></ul><div class="done">Done when: you can enter your real current projects and they survive a reload.</div></div></div>
+      <div class="m"><div class="when">Week 2</div><div><h3>Money + project detail</h3><ul><li>Payments with deposit/balance generated from defaults</li><li>Overdue logic and owed KPIs</li><li>Project detail: deliverables, revision rounds, links, activity log</li></ul><div class="done">Done when: the "owed" number matches what clients actually owe you.</div></div></div>
+      <div class="m"><div class="when">Week 3</div><div><h3>Today + WhatsApp</h3><ul><li>Today screen</li><li>Editable message templates with <code>{client} {amount} {link}</code> placeholders</li><li>Invoice / quote view, PWA install, offline</li></ul><div class="done">Done when: you run a full week from the Today screen.</div></div></div>
+      <div class="m"><div class="when">Week 4+</div><div><h3>Sync (optional)</h3><ul><li>Node API + Postgres on Railway, login</li><li>Upload local data, then sync across phone and laptop</li></ul><div class="done">Done when: an edit on your phone shows up on your laptop.</div></div></div>
+    </div>
+  </section>
+
+  <!-- 10. Questions -->
+  <section class="panel">
+    <div class="panel-head"><h2>Questions to settle before building</h2></div>
+    <ul class="plain">
+      <li>Which Sorah Ops modules do you actually use on #projects? Paste a screenshot or the field list and I'll match the scope.</li>
+      <li>Is this for you only, or for other freelancers too? That decides whether login and sync move into v1.</li>
+      <li>Arabic only, or an English toggle as well?</li>
+      <li>Is the product name Freelancers Manager, or does it get a Sorah name?</li>
+    </ul>
+  </section>
+</div>
+
+<script>
+  const P = [
+    { t:"فيديو إطلاق منتج", c:"Nile Coffee", st:"review", stl:"عند العميل", sc:"warn", color:"var(--amber)", due:"الخميس 30/10", round:"تعديل 2 من 3", paid:6000, fee:12000, note:"" },
+    { t:"ريلز رمضان ×6", c:"Bloom Studio", st:"active", stl:"شغال", sc:"acc", color:"var(--accent)", due:"الأربعاء 5/11", round:"3 من 6 اتسلموا", paid:4000, fee:8000, note:"" },
+    { t:"تصوير فرح — مريم وعمر", c:"عميل مباشر", st:"done", stl:"اتسلم", sc:"good", color:"var(--danger)", due:"اتسلم 12/10", round:"", paid:4500, fee:9000, note:"الباقي متأخر 9 أيام" },
+    { t:"هوية بصرية لمطعم", c:"Koshary Lab", st:"lead", stl:"عرض سعر", sc:"muted", color:"var(--line)", due:"مستني رد من 3 أيام", round:"", paid:0, fee:6500, note:"" }
+  ];
+  const fmt = n => n.toLocaleString("en-US");
+  let F = "all";
+  function render(){
+    const list = P.filter(p => F === "all" || p.st === F || (F === "unpaid" && p.st !== "lead" && p.paid < p.fee));
+    document.getElementById("plist").innerHTML = list.map(p => {
+      const pct = Math.round(p.paid / p.fee * 100);
+      return `<article class="pj"><div class="stripe" style="background:${p.color}"></div><div class="main">
+        <div class="r1"><span class="who">${p.t}</span><span class="badge ${p.sc}">${p.stl}</span>${p.note ? `<span class="badge bad">${p.note}</span>` : ""}</div>
+        <div class="client">${p.c}</div>
+        <div class="r2"><span>التسليم <b class="mono">${p.due}</b></span>${p.round ? `<span>${p.round}</span>` : ""}</div>
+        ${p.st === "lead" ? `<div class="pay">العرض <b class="mono" style="color:var(--ink)">${fmt(p.fee)} ج.م</b></div>`
+          : `<div class="pay"><div class="bar"><i style="width:${pct}%"></i></div><span class="mono"><b style="color:var(--ink)">${fmt(p.paid)}</b> / ${fmt(p.fee)} ج.م</span></div>`}
+        <div class="acts"><button class="btn btn-wa btn-sm" type="button">واتساب العميل</button>${p.st !== "lead" && p.paid < p.fee ? `<button class="btn btn-ghost btn-sm" type="button">سجّل دفعة</button>` : ""}<button class="btn btn-ghost btn-sm" type="button">فتح</button></div>
+      </div></article>`;
+    }).join("") || `<div class="empty"><b>مفيش مشاريع هنا</b>جرّب فلتر تاني.</div>`;
+  }
+  document.getElementById("chips").addEventListener("click", e => {
+    const b = e.target.closest("[data-f]"); if (!b) return;
+    F = b.dataset.f;
+    document.querySelectorAll("#chips .chip").forEach(c => c.setAttribute("aria-pressed", c === b));
+    render();
+  });
+  const root = document.documentElement, tb = document.getElementById("themeBtn");
+  const isDark = () => root.dataset.theme ? root.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+  const syncIcon = () => { tb.textContent = isDark() ? "☀" : "☾"; };
+  tb.addEventListener("click", () => { root.dataset.theme = isDark() ? "light" : "dark"; syncIcon(); });
+  syncIcon(); render();
+</script>

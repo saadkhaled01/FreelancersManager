@@ -86,6 +86,11 @@ CREATE TABLE IF NOT EXISTS activity(
   kind TEXT NOT NULL,
   data TEXT NOT NULL DEFAULT '{}'
 );
+CREATE TABLE IF NOT EXISTS reset_tokens(
+  token_hash TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  expires_at INTEGER NOT NULL
+);
 CREATE INDEX IF NOT EXISTS clients_user ON clients(user_id);
 CREATE INDEX IF NOT EXISTS projects_user ON projects(user_id);
 CREATE INDEX IF NOT EXISTS deliverables_user ON deliverables(user_id);

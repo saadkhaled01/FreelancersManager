@@ -46,18 +46,37 @@ export function pruneSessions(db) {
   db.prepare("DELETE FROM sessions WHERE expires_at < ?").run(Date.now());
 }
 
-/* Failed-login throttle: 10 failures per key per 15 minutes. */
-const fails = new Map();
-const WINDOW = 15 * 60e3, LIMIT = 10;
-export function throttled(key) {
-  const f = fails.get(key);
-  if (!f) return false;
-  if (Date.now() - f.start > WINDOW) { fails.delete(key); return false; }
-  return f.n >= LIMIT;
+/* In-memory fixed-window rate limiter. Fine for a single instance; counts reset on restart. */
+export class Limiter {
+  constructor(limit, windowMs) { this.limit = limit; this.windowMs = windowMs; this.hits = new Map(); }
+  #entry(key) {
+    const e = this.hits.get(key);
+    if (e && Date.now() - e.start <= this.windowMs) return e;
+    if (this.hits.size > 10000) this.hits.clear();
+    return null;
+  }
+  blocked(key) { return (this.#entry(key)?.n ?? 0) >= this.limit; }
+  hit(key) {
+    const e = this.#entry(key);
+    if (e) e.n++;
+    else this.hits.set(key, { n: 1, start: Date.now() });
+  }
+  clear(key) { this.hits.delete(key); }
 }
-export function noteFailure(key) {
-  const f = fails.get(key);
-  if (!f || Date.now() - f.start > WINDOW) fails.set(key, { n: 1, start: Date.now() });
-  else f.n++;
+
+/* Password reset tokens: random, stored hashed, single use, 1 hour. */
+export const RESET_MINUTES = 60;
+export function createResetToken(db, userId) {
+  const token = crypto.randomBytes(32).toString("base64url");
+  db.prepare("DELETE FROM reset_tokens WHERE user_id = ? OR expires_at < ?").run(userId, Date.now());
+  db.prepare("INSERT INTO reset_tokens(token_hash, user_id, expires_at) VALUES(?,?,?)")
+    .run(sha(token), userId, Date.now() + RESET_MINUTES * 60e3);
+  return token;
 }
-export function clearFailures(key) { fails.delete(key); }
+export function useResetToken(db, token) {
+  if (typeof token !== "string" || token.length > 100) return null;
+  const row = db.prepare("SELECT user_id, expires_at FROM reset_tokens WHERE token_hash = ?").get(sha(token));
+  if (!row) return null;
+  db.prepare("DELETE FROM reset_tokens WHERE user_id = ?").run(row.user_id);
+  return row.expires_at < Date.now() ? null : row.user_id;
+}

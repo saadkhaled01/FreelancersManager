@@ -5,19 +5,22 @@ import { openDb } from "../server/db.js";
 import { createApp } from "../server/app.js";
 
 let server, base;
+const outbox = [];
+const mailer = { configured: true, async send(m) { outbox.push(m); } };
 before(async () => {
-  server = http.createServer(createApp(openDb(":memory:")));
+  server = http.createServer(createApp(openDb(":memory:"), { trustProxy: true, appUrl: "https://fm.example", mailer }));
   await new Promise(r => server.listen(0, r));
   base = `http://127.0.0.1:${server.address().port}`;
 });
 after(() => server.close());
 
-function agent() {
+let ipSeq = 1;
+function agent(ip = `10.0.0.${ipSeq++}`) {
   let cookie = "";
   return async function call(method, path, body, headers = {}) {
     const r = await fetch(base + "/api" + path, {
       method,
-      headers: { ...(body !== undefined ? { "content-type": "application/json" } : {}), ...(cookie ? { cookie } : {}), ...headers },
+      headers: { "x-forwarded-for": `203.0.113.9, ${ip}`, ...(body !== undefined ? { "content-type": "application/json" } : {}), ...(cookie ? { cookie } : {}), ...headers },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
     const set = r.headers.get("set-cookie");
@@ -160,4 +163,38 @@ test("static files and SPA fallback", async () => {
   assert.match(r.headers.get("content-type"), /text\/html/);
   assert.equal((await fetch(base + "/../server/db.js")).status, 404);
   assert.equal((await fetch(base + "/%2e%2e/server/db.js")).status, 404);
+});
+
+test("password reset by email", async () => {
+  const a = agent();
+  await signup(a, "reset@example.com", { lang: "ar" });
+  outbox.length = 0;
+  assert.equal((await a("POST", "/forgot", { email: "nobody@example.com" })).status, 200);
+  assert.equal(outbox.length, 0);
+  assert.equal((await a("POST", "/forgot", { email: "RESET@example.com" })).status, 200);
+  await new Promise(r => setTimeout(r, 10));
+  assert.equal(outbox.length, 1);
+  assert.equal(outbox[0].to, "reset@example.com");
+  const token = outbox[0].text.match(/https:\/\/fm\.example\/#reset\/([\w-]+)/)[1];
+  assert.match(outbox[0].subject, /باسورد/);
+  const b = agent();
+  assert.equal((await b("POST", "/reset", { token: "bogus", password: "brandnew123" })).body.error, "bad_token");
+  assert.equal((await b("POST", "/reset", { token, password: "short" })).body.field, "password");
+  const r = await b("POST", "/reset", { token, password: "brandnew123" });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.data.me.email, "reset@example.com");
+  assert.equal((await b("POST", "/reset", { token, password: "another123" })).body.error, "bad_token");
+  assert.equal((await a("GET", "/data")).status, 401, "old sessions end");
+  assert.equal((await agent()("POST", "/login", { email: "reset@example.com", password: "brandnew123" })).status, 200);
+});
+
+test("rate limits: signups per IP, reset emails per address", async () => {
+  const ip = "10.9.9.9";
+  for (let i = 0; i < 5; i++) assert.equal((await signup(agent(ip), `bulk${i}@example.com`)).status, 200);
+  assert.equal((await signup(agent(ip), "bulk5@example.com")).status, 429);
+  assert.equal((await signup(agent("10.9.9.10"), "bulk5@example.com")).status, 200);
+  outbox.length = 0;
+  for (let i = 0; i < 5; i++) await agent()("POST", "/forgot", { email: "bulk0@example.com" });
+  await new Promise(r => setTimeout(r, 10));
+  assert.equal(outbox.length, 3);
 });

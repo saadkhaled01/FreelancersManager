@@ -8,6 +8,7 @@ import {
   defaultPayments, today, now,
 } from "./model.js";
 import { seedExamples } from "./seed.js";
+import { createMailer, resetEmail } from "./mail.js";
 
 const APP_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../app");
 const MIME = {
@@ -23,8 +24,20 @@ const CSP = [
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const BODY_LIMIT = 5 * 1024 * 1024;
 
-export function createApp(db, { secureCookies = false } = {}) {
+export function createApp(db, { secureCookies = false, trustProxy = false, appUrl = "", mailer = createMailer() } = {}) {
   setInterval(() => auth.pruneSessions(db), 6 * 3600e3).unref();
+  const limits = {
+    login: new auth.Limiter(10, 15 * 60e3),      // failed logins per IP + email
+    signup: new auth.Limiter(5, 3600e3),         // new accounts per IP
+    forgotIp: new auth.Limiter(10, 3600e3),      // reset requests per IP
+    forgotEmail: new auth.Limiter(3, 3600e3),    // reset emails per address
+    reset: new auth.Limiter(20, 3600e3),         // reset attempts per IP
+  };
+  /* Behind a proxy (Railway), the client is the last address the proxy appended. Only trusted when TRUST_PROXY is on. */
+  const clientIp = req => {
+    const xff = trustProxy && req.headers["x-forwarded-for"];
+    return xff ? String(xff).split(",").pop().trim() : req.socket.remoteAddress;
+  };
 
   return async function handle(req, res) {
     res.setHeader("X-Content-Type-Options", "nosniff");
@@ -54,7 +67,9 @@ export function createApp(db, { secureCookies = false } = {}) {
     const token = cookies(req)[auth.COOKIE];
 
     // Public routes
-    if (method === "POST" && parts[0] === "signup") return signup(res, body, secure);
+    if (method === "POST" && parts[0] === "signup") return signup(req, res, body, secure);
+    if (method === "POST" && parts[0] === "forgot") return forgot(req, res, body, secure);
+    if (method === "POST" && parts[0] === "reset") return reset(req, res, body, secure);
     if (method === "POST" && parts[0] === "login") return login(req, res, body, secure);
     if (method === "POST" && parts[0] === "logout") {
       auth.endSession(db, token);
@@ -139,7 +154,9 @@ export function createApp(db, { secureCookies = false } = {}) {
     if (typeof p !== "string" || p.length < 8 || p.length > 200) throw new HttpError(400, "invalid", { field: "password" });
   }
 
-  function signup(res, body, secure) {
+  function signup(req, res, body, secure) {
+    const ip = clientIp(req);
+    if (limits.signup.blocked(ip)) throw new HttpError(429, "too_many");
     const email = String(body.email ?? "").trim().toLowerCase();
     const name = String(body.name ?? "").trim();
     const lang = body.lang === "en" ? "en" : "ar";
@@ -147,6 +164,7 @@ export function createApp(db, { secureCookies = false } = {}) {
     if (!name || name.length > 120) throw new HttpError(400, "invalid", { field: "name" });
     checkNewPassword(body.password);
     if (db.prepare("SELECT 1 FROM users WHERE email = ?").get(email)) throw new HttpError(409, "email_taken");
+    limits.signup.hit(ip);
     const userId = tx(db, () => {
       const id = insert(db, "users", {
         email, name, lang, pass_hash: auth.hashPassword(body.password), created_at: now(),
@@ -161,16 +179,50 @@ export function createApp(db, { secureCookies = false } = {}) {
 
   function login(req, res, body, secure) {
     const email = String(body.email ?? "").trim().toLowerCase();
-    const key = `${req.socket.remoteAddress}|${email}`;
-    if (auth.throttled(key)) throw new HttpError(429, "too_many");
+    const key = `${clientIp(req)}|${email}`;
+    if (limits.login.blocked(key)) throw new HttpError(429, "too_many");
     const u = db.prepare("SELECT id, pass_hash FROM users WHERE email = ?").get(email);
     if (!u || !auth.checkPassword(String(body.password ?? ""), u.pass_hash)) {
-      auth.noteFailure(key);
+      limits.login.hit(key);
       throw new HttpError(400, "bad_login");
     }
-    auth.clearFailures(key);
+    limits.login.clear(key);
     setCookie(res, auth.createSession(db, u.id), auth.SESSION_DAYS * 86400, secure);
     return send(res, 200, { data: snapshot(db, u.id) });
+  }
+
+  /* Always answers ok, so the response never reveals whether an email has an account. */
+  function forgot(req, res, body, secure) {
+    const ip = clientIp(req);
+    const email = String(body.email ?? "").trim().toLowerCase();
+    if (limits.forgotIp.blocked(ip)) throw new HttpError(429, "too_many");
+    limits.forgotIp.hit(ip);
+    const u = EMAIL_RE.test(email) && db.prepare("SELECT id, name, lang FROM users WHERE email = ?").get(email);
+    if (u && !limits.forgotEmail.blocked(email)) {
+      limits.forgotEmail.hit(email);
+      // Never build the link from the Host header when real email goes out: a forged Host would mail the token to another site.
+      const origin = appUrl || (mailer.configured ? "" : `${secure ? "https" : "http"}://${req.headers.host}`);
+      if (!origin) console.error("APP_URL is not set, so password reset emails can't be sent.");
+      else {
+        const token = auth.createResetToken(db, u.id);
+        const msg = resetEmail({ lang: u.lang, name: u.name, link: `${origin.replace(/\/$/, "")}/#reset/${token}`, minutes: auth.RESET_MINUTES });
+        mailer.send({ to: email, ...msg }).catch(e => console.error("Reset email failed:", e.message));
+      }
+    }
+    return send(res, 200, { ok: true });
+  }
+
+  function reset(req, res, body, secure) {
+    const ip = clientIp(req);
+    if (limits.reset.blocked(ip)) throw new HttpError(429, "too_many");
+    limits.reset.hit(ip);
+    checkNewPassword(body.password);
+    const userId = auth.useResetToken(db, body.token);
+    if (!userId) throw new HttpError(400, "bad_token");
+    db.prepare("UPDATE users SET pass_hash = ? WHERE id = ?").run(auth.hashPassword(body.password), userId);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    setCookie(res, auth.createSession(db, userId), auth.SESSION_DAYS * 86400, secure);
+    return send(res, 200, { data: snapshot(db, userId) });
   }
 
   /* ---------- records ---------- */

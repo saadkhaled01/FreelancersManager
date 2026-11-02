@@ -28,7 +28,7 @@ const S = {
   route: { name: "today", id: null },
   filter: "all", q: "", clientQ: "",
   money: { month: today().slice(0, 7), state: "all", method: "all" },
-  authTab: "signup", offline: false, tplKind: "quote", invLang: null,
+  authTab: "signup", forgotSent: false, offline: false, tplKind: "quote", invLang: null,
   confirm: null, importData: null,
 };
 
@@ -236,6 +236,11 @@ function renderChrome() {
 function render() {
   renderChrome();
   const v = $("#view");
+  if (S.route.name === "reset") {
+    v.innerHTML = resetView();
+    document.title = `${t("reset_title")} · ${t("brand")}`;
+    return;
+  }
   if (!S.data) {
     v.innerHTML = authView();
     document.title = t("brand");
@@ -286,6 +291,25 @@ function pcard(p) {
 }
 
 /* ============ auth ============ */
+function forgotPanel() {
+  if (S.forgotSent) return `<section class="panel"><h2 style="font-size:18px">${t("forgot_sent")}</h2><p class="muted">${t("forgot_sent_hint")}</p>
+    <button class="btn btn-ghost" data-act="authTab" data-v="login">${t("back_to_login")}</button></section>`;
+  return `<section class="panel"><h2 style="font-size:18px">${t("forgot_title")}</h2><p class="muted">${t("forgot_hint")}</p>
+    <form data-form="forgot">
+      <div class="field req"><label for="fEmail">${t("f_email")}</label><input id="fEmail" name="email" type="email" autocomplete="email" required class="ltr"></div>
+      <div class="err" id="authErr"></div>
+      <button class="btn btn-primary btn-block" type="submit">${t("send_link")}</button>
+      <button class="linkish" type="button" data-act="authTab" data-v="login" style="align-self:center">${t("back_to_login")}</button>
+    </form></section>`;
+}
+function resetView() {
+  return `<div class="auth"><section class="pitch"><h1>${t("reset_title")}</h1><p>${t("reset_hint")}</p></section>
+    <section class="panel"><form data-form="reset">
+      <div class="field req"><label for="rPass">${t("new_password")}</label><input id="rPass" name="password" type="password" minlength="8" required autocomplete="new-password"><span class="hint">${t("pass_hint")}</span></div>
+      <div class="err" id="authErr"></div>
+      <button class="btn btn-primary btn-block" type="submit">${t("set_password")}</button>
+    </form></section></div>`;
+}
 function authView() {
   const su = S.authTab === "signup";
   return `<div class="auth">
@@ -299,7 +323,7 @@ function authView() {
         <li><i aria-hidden="true">✓</i><span>${t("pitch_4")}</span></li>
       </ul>
     </section>
-    <section class="panel">
+    ${S.authTab === "forgot" ? forgotPanel() : `<section class="panel">
       <div class="seg" role="tablist">
         <button type="button" data-act="authTab" data-v="signup" aria-pressed="${su}">${t("signup")}</button>
         <button type="button" data-act="authTab" data-v="login" aria-pressed="${!su}">${t("login")}</button>
@@ -311,8 +335,9 @@ function authView() {
         ${su ? `<label class="check"><input type="checkbox" name="examples" checked><span>${t("start_examples")}</span></label>` : ""}
         <div class="err" id="authErr"></div>
         <button class="btn btn-primary btn-block" type="submit">${su ? t("create_account") : t("login")}</button>
+        ${su ? "" : `<button class="linkish" type="button" data-act="authTab" data-v="forgot" style="align-self:center">${t("forgot_link")}</button>`}
       </form>
-    </section>
+    </section>`}
   </div>`;
 }
 
@@ -890,7 +915,7 @@ const ACTS = {
     renderChrome();
   },
   close: closeModal,
-  authTab: el => { S.authTab = el.dataset.v; render(); },
+  authTab: el => { S.authTab = el.dataset.v; S.forgotSent = false; render(); },
   filter: el => { S.filter = el.dataset.v; render(); },
   moneyState: el => { S.money.state = el.dataset.v; render(); },
   month: el => { S.money.month = shiftMonth(S.money.month, Number(el.dataset.v)); render(); },
@@ -1000,6 +1025,22 @@ const FORMS = {
       location.hash = "today";
       render();
       toast(t("welcome"));
+    } catch (e) { $("#authErr").textContent = errMsg(e); }
+  },
+  async forgot(o) {
+    try {
+      await api("POST", "/forgot", { email: o.email });
+      S.forgotSent = true;
+      render();
+    } catch (e) { $("#authErr").textContent = errMsg(e); }
+  },
+  async reset(o) {
+    try {
+      await api("POST", "/reset", { token: S.route.raw, password: o.password });
+      history.replaceState(null, "", "#today");
+      S.route = parseHash();
+      render();
+      toast(t("password_reset_done"));
     } catch (e) { $("#authErr").textContent = errMsg(e); }
   },
   async project(o, form) {
@@ -1117,7 +1158,7 @@ async function readImport(input) {
 /* ============ routing & boot ============ */
 function parseHash() {
   const [name, id] = location.hash.slice(1).split("/");
-  return { name: name || "today", id: id ? Number(id) : null };
+  return { name: name || "today", id: id && /^\d+$/.test(id) ? Number(id) : null, raw: id || "" };
 }
 function go(h) {
   if (location.hash.slice(1) === h) { S.route = parseHash(); render(); }

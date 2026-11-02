@@ -17,11 +17,11 @@ const APP_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../a
 const MIME = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
   ".json": "application/json", ".webmanifest": "application/manifest+json", ".svg": "image/svg+xml",
-  ".png": "image/png", ".ico": "image/x-icon", ".txt": "text/plain; charset=utf-8",
+  ".png": "image/png", ".ico": "image/x-icon", ".txt": "text/plain; charset=utf-8", ".woff2": "font/woff2",
 };
 const CSP = [
-  "default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-  "font-src 'self' https://fonts.gstatic.com", "img-src 'self' data:", "connect-src 'self'",
+  "default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline'",
+  "font-src 'self'", "img-src 'self' data:", "connect-src 'self'",
   "frame-ancestors 'none'", "base-uri 'self'", "form-action 'self'",
 ].join("; ");
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -497,7 +497,8 @@ function serveStatic(req, res, pathname) {
   }
   res.writeHead(200, {
     "Content-Type": MIME[path.extname(file)] || "application/octet-stream",
-    "Cache-Control": "no-cache",
+    // Fonts never change under the same name; everything else revalidates so updates show up at once.
+    "Cache-Control": file.endsWith(".woff2") ? "public, max-age=2592000" : "no-cache",
   });
   if (req.method === "HEAD") return res.end();
   fs.createReadStream(file).pipe(res);

@@ -11,6 +11,7 @@ Projects, clients and payments for freelancers, in Arabic and English. It's a sm
 - **Money**: received vs expected per month, a 6-month chart, and every payment filtered by status and method.
 - **Invoices and quotes**: in Arabic or English, ready to print or save as PDF.
 - **Accounts**: anyone can sign up. Every user's data is private to them. Password reset by email. Backup and restore as JSON.
+- Typography: Alexandria for headings and Readex Pro for text, both drawn for Arabic and Latin together, with IBM Plex Mono for figures. The fonts ship in `app/fonts` (OFL licensed), so nothing loads from Google Fonts and they work offline.
 - Installable as an app (PWA). With no connection it shows your last loaded data read-only.
 
 ## Run it

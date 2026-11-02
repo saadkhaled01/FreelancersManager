@@ -1,6 +1,10 @@
 /* App shell cache. Network first so updates show up immediately; cache is the offline fallback. API calls are never cached here. */
-const CACHE = "fm-shell-v2";
-const SHELL = ["/", "/app.css", "/app.js", "/i18n.js", "/manifest.webmanifest", "/icon.svg", "/icon-192.png"];
+const CACHE = "fm-shell-v3";
+const SHELL = [
+  "/", "/app.css", "/app.js", "/i18n.js", "/manifest.webmanifest", "/icon.svg", "/icon-192.png",
+  "/fonts/readex-pro-arabic.woff2", "/fonts/readex-pro-latin.woff2", "/fonts/alexandria-arabic.woff2", "/fonts/alexandria-latin.woff2",
+  "/fonts/ibm-plex-mono-500.woff2", "/fonts/ibm-plex-mono-600.woff2",
+];
 
 self.addEventListener("install", e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -11,14 +15,12 @@ self.addEventListener("activate", e => {
 self.addEventListener("fetch", e => {
   const url = new URL(e.request.url);
   if (e.request.method !== "GET" || url.pathname.startsWith("/api/")) return;
-  const sameOrigin = url.origin === location.origin;
-  const isFont = url.hostname === "fonts.googleapis.com" || url.hostname === "fonts.gstatic.com";
-  if (!sameOrigin && !isFont) return;
+  if (url.origin !== location.origin) return;
   e.respondWith((async () => {
     const cache = await caches.open(CACHE);
     try {
       const res = await fetch(e.request);
-      if (res.ok || res.type === "opaque") cache.put(e.request.mode === "navigate" ? "/" : e.request, res.clone());
+      if (res.ok) cache.put(e.request.mode === "navigate" ? "/" : e.request, res.clone());
       return res;
     } catch {
       return (await cache.match(e.request.mode === "navigate" ? "/" : e.request)) || Response.error();

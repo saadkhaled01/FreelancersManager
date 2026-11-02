@@ -10,6 +10,11 @@ const server = http.createServer(createApp(db, {
   secureCookies: process.env.COOKIE_SECURE === "1",
   trustProxy: process.env.TRUST_PROXY === "1",
   appUrl: process.env.APP_URL || "",
+  google: {
+    clientId: process.env.GOOGLE_CLIENT_ID,
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+    secretKey: process.env.SECRET_KEY,
+  },
 }));
 
 server.listen(PORT, () => console.log(`Freelancers Manager on http://localhost:${PORT} (data: ${DATA_DIR})`));

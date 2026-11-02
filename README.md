@@ -3,7 +3,9 @@
 Projects, clients and payments for freelancers, in Arabic and English. It's a smaller version of Sorah Ops, built on the Sorah Rent design system.
 
 - **Today**: what's due this week, payments to chase, clients who haven't replied, projects past their revision limit.
-- **Projects**: status, due date, deliverables checklist, revision rounds, delivery links, notes and an activity log.
+- **Projects**: laid out like Sorah Ops. Grouped by stage (Brief → Booked → In production → Client review ⇄ Revisions → Delivered → Collecting → Done), with session date and time, due date, days left, an inline stage picker, Drive folder and "Open in Google Calendar" links. Codes look like `FM-2611-003`. Each project has a deliverables checklist, revision rounds, delivery links, notes and an activity log, and can be duplicated for repeat work. A delivered project moves to Done by itself once it's fully paid.
+- **Calendar**: a month view of sessions, deadlines, deliverables and payment dates (an agenda list on phones).
+- **Google Calendar**: each user can connect their own Google account. The app creates a "Freelancers Manager" calendar and keeps it in sync within seconds of every change. Without that, any user can subscribe to a private calendar link from Google, Apple or Outlook Calendar.
 - **Payments**: deposit and balance are created from the fee; overdue payments are flagged automatically.
 - **WhatsApp**: ready-made quote, delivery, reminder and thank-you messages, sent in each client's language and editable in Settings.
 - **Money**: received vs expected per month, a 6-month chart, and every payment filtered by status and method.
@@ -32,6 +34,10 @@ Data is stored in SQLite at `$DATA_DIR/freelancers.db` (default `./data`).
 | `RESEND_API_KEY` | unset | [Resend](https://resend.com) API key for password reset emails. |
 | `MAIL_FROM` | unset | Sender, e.g. `Freelancers Manager <noreply@yourdomain.com>`. The domain must be verified in Resend. |
 
+| `GOOGLE_CLIENT_ID` | unset | OAuth client for Google Calendar sync (see below). |
+| `GOOGLE_CLIENT_SECRET` | unset | Its secret. |
+| `SECRET_KEY` | unset | Long random string used to encrypt users' Google tokens. Required for Google sync. If it changes, users must reconnect. |
+
 Without `RESEND_API_KEY` and `MAIL_FROM`, reset emails are printed to the server log instead of sent, so you can pass a link on by hand.
 
 ### Limits
@@ -46,10 +52,24 @@ Per instance, kept in memory: 10 failed logins per IP and email per 15 minutes, 
 4. Generate a domain, then set `APP_URL` to it.
 5. For password reset emails, add `RESEND_API_KEY` and `MAIL_FROM`.
 
+## Google Calendar sync
+
+Optional. Without it, users still get the calendar link and per-project "Open in Google Calendar" buttons.
+
+1. In [Google Cloud Console](https://console.cloud.google.com/), create a project and enable the **Google Calendar API**.
+2. Set up the **OAuth consent screen** (External). Add the scope `https://www.googleapis.com/auth/calendar.app.created`. It only lets the app manage calendars it creates, not the rest of the user's calendar.
+3. Under **Credentials**, create an **OAuth client ID** of type *Web application*. Add the redirect URI `<APP_URL>/api/google/callback`.
+4. Set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `SECRET_KEY`, plus `APP_URL`.
+
+While the consent screen is in **Testing**, only the test users you list can connect, and Google expires their access after 7 days. Publish the app to remove both limits; Google may ask you to verify it first.
+
+Sync is one-way, app to Google: edits made directly in Google Calendar are overwritten on the next sync. Disconnecting (or deleting the account) removes the calendar from the user's Google account and revokes access.
+
 ## Layout
 
 ```
-server/   Node HTTP server: auth (scrypt + cookie sessions, reset tokens, rate limits), JSON API, email, static files
+server/   Node HTTP server: auth (scrypt + cookie sessions, reset tokens, rate limits), JSON API, email,
+          calendar feed (ics.js), Google Calendar sync (google.js), schema migrations (db.js), static files
 app/      Front end: vanilla JS, one stylesheet, Arabic/English strings in i18n.js
 test/     API tests (node:test)
 docs/     The original build plan

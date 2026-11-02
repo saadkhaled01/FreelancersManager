@@ -5,10 +5,13 @@ import { tx } from "./db.js";
 import * as auth from "./auth.js";
 import {
   SPECS, ME_SPEC, HttpError, validate, snapshot, publicMe, log, owned, insert, update,
-  defaultPayments, today, now,
+  defaultPayments, today, now, nextCode, moneyFormatter,
 } from "./model.js";
+import { createGoogle } from "./google.js";
 import { seedExamples } from "./seed.js";
 import { createMailer, resetEmail } from "./mail.js";
+import { buildIcs } from "./ics.js";
+import crypto from "node:crypto";
 
 const APP_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../app");
 const MIME = {
@@ -24,8 +27,14 @@ const CSP = [
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const BODY_LIMIT = 5 * 1024 * 1024;
 
-export function createApp(db, { secureCookies = false, trustProxy = false, appUrl = "", mailer = createMailer() } = {}) {
+export function createApp(db, { secureCookies = false, trustProxy = false, appUrl = "", mailer = createMailer(), google: googleCfg = {} } = {}) {
   setInterval(() => auth.pruneSessions(db), 6 * 3600e3).unref();
+  const google = createGoogle(db, { appUrl, ...googleCfg });
+  const snap = userId => {
+    const d = snapshot(db, userId);
+    d.me.google = google.status(userId);
+    return d;
+  };
   const limits = {
     login: new auth.Limiter(10, 15 * 60e3),      // failed logins per IP + email
     signup: new auth.Limiter(5, 3600e3),         // new accounts per IP
@@ -47,6 +56,7 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
       const url = new URL(req.url, "http://x");
       if (url.pathname === "/healthz") return send(res, 200, { ok: true });
       if (url.pathname.startsWith("/api/")) return await api(req, res, url);
+      if (url.pathname.startsWith("/cal/")) return calendarFeed(res, url.pathname.slice(5));
       return serveStatic(req, res, url.pathname);
     } catch (e) {
       if (e instanceof HttpError) return send(res, e.status, e.body);
@@ -79,7 +89,11 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
 
     const userId = auth.sessionUser(db, token);
     if (!userId) throw new HttpError(401, "auth");
-    const reply = (extra = {}) => send(res, 200, { ...extra, data: snapshot(db, userId) });
+    const reply = (extra = {}) => send(res, 200, { ...extra, data: snap(userId) });
+    // Any successful change may move a date, so queue a Google Calendar sync (no-op when not connected).
+    if (method !== "GET") res.on("finish", () => { if (res.statusCode < 400) google.schedule(userId); });
+
+    if (parts[0] === "google") return googleRoute(req, res, url, parts, method, userId, reply, secure);
 
     if (parts[0] === "data" && method === "GET") return reply();
 
@@ -97,9 +111,15 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
         update(db, "users", userId, validate(ME_SPEC, body, { partial: true }));
         return reply();
       }
+      if (parts[1] === "calendar" && (method === "POST" || method === "DELETE")) {
+        const token = method === "POST" ? crypto.randomBytes(24).toString("base64url") : null;
+        db.prepare("UPDATE users SET cal_token = ? WHERE id = ?").run(token, userId);
+        return reply();
+      }
       if (!parts[1] && method === "DELETE") {
         const u = db.prepare("SELECT pass_hash FROM users WHERE id = ?").get(userId);
         if (!auth.checkPassword(String(body.password ?? ""), u.pass_hash)) throw new HttpError(400, "wrong_password");
+        if (google.available) await google.disconnect(userId);
         tx(db, () => {
           for (const t of ["activity", "payments", "deliverables", "projects", "clients", "sessions"])
             db.prepare(`DELETE FROM ${t} WHERE user_id = ?`).run(userId);
@@ -130,6 +150,11 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
       if (!text || text.length > 2000) throw new HttpError(400, "invalid", { field: "text" });
       log(db, userId, Number(parts[1]), "note", { text });
       return reply();
+    }
+
+    if (parts[0] === "projects" && parts[2] === "duplicate" && method === "POST") {
+      const id = tx(db, () => duplicate(userId, parts[1], body));
+      return reply({ id });
     }
 
     const table = parts[0];
@@ -174,7 +199,7 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
       return id;
     });
     setCookie(res, auth.createSession(db, userId), auth.SESSION_DAYS * 86400, secure);
-    return send(res, 200, { data: snapshot(db, userId) });
+    return send(res, 200, { data: snap(userId) });
   }
 
   function login(req, res, body, secure) {
@@ -188,7 +213,7 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
     }
     limits.login.clear(key);
     setCookie(res, auth.createSession(db, u.id), auth.SESSION_DAYS * 86400, secure);
-    return send(res, 200, { data: snapshot(db, u.id) });
+    return send(res, 200, { data: snap(u.id) });
   }
 
   /* Always answers ok, so the response never reveals whether an email has an account. */
@@ -222,7 +247,34 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
     db.prepare("UPDATE users SET pass_hash = ? WHERE id = ?").run(auth.hashPassword(body.password), userId);
     db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
     setCookie(res, auth.createSession(db, userId), auth.SESSION_DAYS * 86400, secure);
-    return send(res, 200, { data: snapshot(db, userId) });
+    return send(res, 200, { data: snap(userId) });
+  }
+
+  /* ---------- Google Calendar ---------- */
+  async function googleRoute(req, res, url, parts, method, userId, reply, secure) {
+    if (!google.available) throw new HttpError(404, "google_unavailable");
+    const action = parts[1];
+    if (action === "connect" && method === "GET") {
+      const tz = url.searchParams.get("tz");
+      if (tz) { try { update(db, "users", userId, validate({ tz: ME_SPEC.tz }, { tz }, { partial: true })); } catch { /* keep old */ } }
+      const state = crypto.randomBytes(18).toString("base64url");
+      res.setHeader("Set-Cookie", `fm_gstate=${state}; Path=/api/google; HttpOnly; SameSite=Lax; Max-Age=600${secure ? "; Secure" : ""}`);
+      return redirect(res, google.authUrl(state));
+    }
+    if (action === "callback" && method === "GET") {
+      res.setHeader("Set-Cookie", `fm_gstate=; Path=/api/google; HttpOnly; SameSite=Lax; Max-Age=0${secure ? "; Secure" : ""}`);
+      const state = cookies(req).fm_gstate, code = url.searchParams.get("code");
+      if (!state || state !== url.searchParams.get("state") || !code) return redirect(res, "/#settings/google-error");
+      try { await google.connect(userId, code); }
+      catch (e) {
+        console.error("Google connect failed:", e.message);
+        return redirect(res, "/#settings/google-error");
+      }
+      return redirect(res, "/#settings/google-ok");
+    }
+    if (action === "sync" && method === "POST") { await google.sync(userId); return reply(); }
+    if (!action && method === "DELETE") { await google.disconnect(userId); return reply(); }
+    throw new HttpError(404, "not_found");
   }
 
   /* ---------- records ---------- */
@@ -238,16 +290,18 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
     if (table === "clients") return insert(db, table, { ...values, user_id: userId, created_at: t, updated_at: t });
     if (table === "projects") return createProject(userId, values, body, t);
     const id = insert(db, table, { ...values, user_id: userId, created_at: t });
-    if (table === "payments" && values.paid_at) log(db, userId, values.project_id, "paid", { amount: values.amount, method: values.method || "" });
+    if (table === "payments" && values.paid_at) {
+      log(db, userId, values.project_id, "paid", { amount: values.amount, method: values.method || "" });
+      settle(userId, values.project_id);
+    }
     return id;
   }
 
   function createProject(userId, values, body, t) {
-    const u = db.prepare("SELECT next_code, deposit_pct, revisions FROM users WHERE id = ?").get(userId);
-    db.prepare("UPDATE users SET next_code = next_code + 1 WHERE id = ?").run(userId);
+    const u = db.prepare("SELECT deposit_pct, revisions FROM users WHERE id = ?").get(userId);
     const row = {
-      status: "active", revisions_allowed: u.revisions, ...values,
-      user_id: userId, code: `FM-${u.next_code}`, status_at: t, created_at: t, updated_at: t,
+      status: "lead", revisions_allowed: u.revisions, ...values,
+      user_id: userId, code: nextCode(db, userId), status_at: t, created_at: t, updated_at: t,
     };
     const id = insert(db, "projects", row);
     const pct = Number.isInteger(body.depositPct) && body.depositPct >= 0 && body.depositPct <= 100 ? body.depositPct : u.deposit_pct;
@@ -255,6 +309,32 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
       insert(db, "payments", { ...p, user_id: userId, project_id: id, created_at: t });
     log(db, userId, id, "created", {});
     return id;
+  }
+
+  /* Copies a project's setup (client, type, fee, rounds, deliverables, notes, folder) as a new brief starting today. */
+  function duplicate(userId, id, body) {
+    const src = owned(db, "projects", userId, id);
+    const title = validate({ title: SPECS.projects.title }, { title: body.title ?? src.title }, { partial: false }).title;
+    const t = now();
+    const values = {
+      client_id: src.client_id, title, type: src.type, status: "lead", start_date: today(), due_date: null,
+      fee: src.fee, revisions_allowed: src.revisions_allowed, notes: src.notes, folder_url: src.folder_url,
+    };
+    const newId = createProject(userId, values, {}, t);
+    for (const d of db.prepare("SELECT label FROM deliverables WHERE project_id = ? ORDER BY id").all(src.id))
+      insert(db, "deliverables", { user_id: userId, project_id: newId, label: d.label, done: 0, due_date: null, created_at: t });
+    return newId;
+  }
+
+  function calendarFeed(res, file) {
+    const token = file.endsWith(".ics") ? file.slice(0, -4) : "";
+    const u = token && token.length < 100 && db.prepare("SELECT id, currency, lang FROM users WHERE cal_token = ?").get(token);
+    if (!u) { res.writeHead(404, { "Content-Type": "text/plain" }); return res.end("Not found"); }
+    res.writeHead(200, {
+      "Content-Type": "text/calendar; charset=utf-8", "Cache-Control": "no-cache",
+      "Content-Disposition": 'inline; filename="freelancers-manager.ics"',
+    });
+    res.end(buildIcs(snapshot(db, u.id), moneyFormatter(u)));
   }
 
   function patch(table, userId, id, body) {
@@ -283,6 +363,19 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
     if (table === "deliverables" && values.done === 1 && !old.done)
       log(db, userId, old.project_id, "done", { label: values.label ?? old.label });
     update(db, table, old.id, values);
+    if (table === "payments") settle(userId, old.project_id);
+    if (table === "projects" && values.status === "delivered") settle(userId, old.id);
+  }
+
+  /* A delivered project that's fully paid is finished: move it to Done, like Sorah Ops' collection → done step. */
+  function settle(userId, projectId) {
+    const p = db.prepare("SELECT id, status, fee FROM projects WHERE id = ? AND user_id = ?").get(projectId, userId);
+    if (!p || p.status !== "delivered" || !(p.fee > 0)) return;
+    const paid = db.prepare("SELECT COALESCE(SUM(amount), 0) s FROM payments WHERE project_id = ? AND paid_at IS NOT NULL").get(p.id).s;
+    if (paid + 0.005 < p.fee) return;
+    const t = now();
+    db.prepare("UPDATE projects SET status = 'archived', status_at = ?, updated_at = ? WHERE id = ?").run(t, t, p.id);
+    log(db, userId, p.id, "status", { from: "delivered", to: "archived", auto: true });
   }
 
   function remove(table, userId, id) {
@@ -308,17 +401,14 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
         const v = validate(SPECS.clients, c, { partial: false });
         clientIds.set(c.id, insert(db, "clients", { ...v, user_id: userId, created_at: str(c.createdAt) || t, updated_at: t }));
       }
-      let maxCode = 1000;
       for (const p of list("projects")) {
         const v = validate(SPECS.projects, { ...p, clientId: null }, { partial: false });
         v.client_id = clientIds.get(p.clientId) ?? null;
-        const code = /^FM-\d{1,9}$/.test(p.code) ? p.code : `FM-${++maxCode}`;
-        maxCode = Math.max(maxCode, Number(code.slice(3)));
+        const code = /^FM-(\d{4}-\d{3,4}|\d{1,9})$/.test(p.code) ? p.code : nextCode(db, userId);
         projectIds.set(p.id, insert(db, "projects", {
           ...v, user_id: userId, code, status_at: str(p.statusAt) || t, created_at: str(p.createdAt) || t, updated_at: t,
         }));
       }
-      db.prepare("UPDATE users SET next_code = MAX(next_code, ?) WHERE id = ?").run(maxCode + 1, userId);
       for (const k of ["deliverables", "payments"]) {
         for (const r of list(k)) {
           const pid = projectIds.get(r.projectId);
@@ -345,6 +435,11 @@ function send(res, status, obj) {
   const body = JSON.stringify(obj);
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
   res.end(body);
+}
+
+function redirect(res, location) {
+  res.writeHead(302, { Location: location, "Cache-Control": "no-store" });
+  res.end();
 }
 
 function cookies(req) {

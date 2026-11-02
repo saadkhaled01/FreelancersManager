@@ -4,28 +4,81 @@ import http from "node:http";
 import { openDb } from "../server/db.js";
 import { createApp } from "../server/app.js";
 
-let server, base;
+let server, base, gserver, gbase;
 const outbox = [];
 const mailer = { configured: true, async send(m) { outbox.push(m); } };
+
+/* A tiny stand-in for Google's OAuth and Calendar APIs. */
+const G = { calendars: new Map(), revoked: [], seq: 1 };
+function fakeGoogle(req, res) {
+  let raw = "";
+  req.on("data", c => (raw += c));
+  req.on("end", () => {
+    const url = new URL(req.url, "http://g");
+    const json = (status, obj) => { res.writeHead(status, { "content-type": "application/json" }); res.end(obj ? JSON.stringify(obj) : ""); };
+    if (url.pathname === "/token") {
+      const p = new URLSearchParams(raw);
+      if (p.get("grant_type") === "authorization_code" && p.get("code") === "good-code")
+        return json(200, { access_token: "at-1", refresh_token: "rt-1", expires_in: 3600 });
+      if (p.get("grant_type") === "refresh_token" && p.get("refresh_token") === "rt-1") return json(200, { access_token: "at-2", expires_in: 3600 });
+      return json(400, { error: "invalid_grant" });
+    }
+    if (url.pathname === "/revoke") { G.revoked.push(url.searchParams.get("token")); return json(200, {}); }
+    if (!/^Bearer at-/.test(req.headers.authorization || "")) return json(401, {});
+    const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
+    const body = raw ? JSON.parse(raw) : null;
+    if (parts[0] !== "calendars") return json(404);
+    if (parts.length === 1 && req.method === "POST") {
+      const id = `cal${G.seq++}@group.calendar.google.com`;
+      G.calendars.set(id, { ...body, id, events: new Map() });
+      return json(200, { id });
+    }
+    const cal = G.calendars.get(parts[1]);
+    if (!cal) return json(404);
+    if (parts.length === 2 && req.method === "GET") return json(200, { id: cal.id });
+    if (parts.length === 2 && req.method === "DELETE") { G.calendars.delete(parts[1]); return json(204); }
+    if (parts[2] !== "events") return json(404);
+    if (parts.length === 3 && req.method === "POST") { const id = `ev${G.seq++}`; cal.events.set(id, body); return json(200, { id }); }
+    if (!cal.events.has(parts[3])) return json(404);
+    if (req.method === "PUT") { cal.events.set(parts[3], body); return json(200, { id: parts[3] }); }
+    if (req.method === "DELETE") { cal.events.delete(parts[3]); return json(204); }
+    return json(404);
+  });
+}
+
 before(async () => {
-  server = http.createServer(createApp(openDb(":memory:"), { trustProxy: true, appUrl: "https://fm.example", mailer }));
+  gserver = http.createServer(fakeGoogle);
+  await new Promise(r => gserver.listen(0, r));
+  gbase = `http://127.0.0.1:${gserver.address().port}`;
+  server = http.createServer(createApp(openDb(":memory:"), {
+    trustProxy: true, appUrl: "https://fm.example", mailer,
+    google: { clientId: "cid", clientSecret: "secret", secretKey: "test-secret-key", authUrl: gbase + "/auth", tokenUrl: gbase + "/token", apiBase: gbase, revokeUrl: gbase + "/revoke", syncDelay: 20 },
+  }));
   await new Promise(r => server.listen(0, r));
   base = `http://127.0.0.1:${server.address().port}`;
 });
-after(() => server.close());
+after(() => { server.close(); gserver.close(); });
 
 let ipSeq = 1;
 function agent(ip = `10.0.0.${ipSeq++}`) {
-  let cookie = "";
+  const jar = new Map();
   return async function call(method, path, body, headers = {}) {
+    const cookie = [...jar].map(([k, v]) => `${k}=${v}`).join("; ");
     const r = await fetch(base + "/api" + path, {
       method,
       headers: { "x-forwarded-for": `203.0.113.9, ${ip}`, ...(body !== undefined ? { "content-type": "application/json" } : {}), ...(cookie ? { cookie } : {}), ...headers },
       body: body !== undefined ? JSON.stringify(body) : undefined,
+      redirect: "manual",
     });
-    const set = r.headers.get("set-cookie");
-    if (set) cookie = set.split(";")[0];
-    return { status: r.status, body: await r.json() };
+    for (const c of r.headers.getSetCookie()) {
+      const [kv] = c.split(";");
+      const i = kv.indexOf("=");
+      if (/Max-Age=0/.test(c)) jar.delete(kv.slice(0, i)); else jar.set(kv.slice(0, i), kv.slice(i + 1));
+    }
+    const text = await r.text();
+    let json = null;
+    try { json = JSON.parse(text); } catch { /* redirects and calendars aren't JSON */ }
+    return { status: r.status, body: json, text, location: r.headers.get("location") };
   };
 }
 
@@ -63,14 +116,14 @@ test("project creation splits deposit and balance, codes increment", async () =>
   const p = await a("POST", "/projects", { title: "Promo", clientId: c.body.id, fee: 1000, dueDate: "2030-01-10", depositPct: 30 });
   assert.equal(p.status, 200);
   const proj = p.body.data.projects.find(x => x.id === p.body.id);
-  assert.equal(proj.code, "FM-1001");
-  assert.equal(proj.status, "active");
+  assert.match(proj.code, /^FM-\d{4}-001$/);
+  assert.equal(proj.status, "lead");
   assert.equal(proj.revisionsAllowed, 3);
   const pays = p.body.data.payments.filter(x => x.projectId === proj.id);
   assert.deepEqual(pays.map(x => [x.kind, x.amount]), [["deposit", 300], ["balance", 700]]);
   assert.equal(pays[1].dueDate, "2030-01-10");
   const p2 = await a("POST", "/projects", { title: "Second" });
-  assert.equal(p2.body.data.projects.find(x => x.id === p2.body.id).code, "FM-1002");
+  assert.match(p2.body.data.projects.find(x => x.id === p2.body.id).code, /^FM-\d{4}-002$/);
   assert.equal(p2.body.data.payments.filter(x => x.projectId === p2.body.id).length, 0);
 });
 
@@ -125,7 +178,7 @@ test("client with projects can't be deleted; project delete cascades", async () 
 test("examples, export and import round trip", async () => {
   const a = agent();
   const s = await signup(a, "five@example.com", { examples: true, lang: "ar" });
-  assert.equal(s.body.data.projects.length, 4);
+  assert.equal(s.body.data.projects.length, 5);
   assert.equal(s.body.data.me.currency, "EGP");
   const ex = await a("GET", "/export");
   assert.equal(ex.body.app, "freelancers-manager");
@@ -134,12 +187,13 @@ test("examples, export and import round trip", async () => {
   const imp = await b("POST", "/import", ex.body);
   assert.equal(imp.status, 200);
   const d = imp.body.data;
-  assert.equal(d.projects.length, 4);
+  assert.equal(d.projects.length, 5);
   assert.equal(d.clients.length, 4);
-  assert.equal(d.payments.length, 8);
+  assert.equal(d.payments.length, 10);
   assert.ok(d.projects.every(p => d.clients.some(c => c.id === p.clientId)));
+  assert.ok(d.projects.some(p => p.sessionAt && p.folderUrl === "" || p.folderUrl));
   const p = await b("POST", "/projects", { title: "After import" });
-  assert.equal(p.body.data.projects.find(x => x.id === p.body.id).code, "FM-1005");
+  assert.match(p.body.data.projects.find(x => x.id === p.body.id).code, /^FM-\d{4}-006$/);
   assert.equal((await b("POST", "/import", { app: "other" })).status, 400);
 });
 
@@ -197,4 +251,96 @@ test("rate limits: signups per IP, reset emails per address", async () => {
   for (let i = 0; i < 5; i++) await agent()("POST", "/forgot", { email: "bulk0@example.com" });
   await new Promise(r => setTimeout(r, 10));
   assert.equal(outbox.length, 3);
+});
+
+test("duplicate, session time, folder link, and auto-done when paid", async () => {
+  const a = agent();
+  await signup(a, "dup@example.com");
+  const c = await a("POST", "/clients", { name: "Repeat Co" });
+  const p = await a("POST", "/projects", { title: "Monthly reel", clientId: c.body.id, fee: 1000, status: "active", sessionAt: "2030-03-04T10:30", folderUrl: "https://drive.google.com/x" });
+  await a("POST", "/deliverables", { projectId: p.body.id, label: "Reel" });
+  assert.equal((await a("PATCH", `/projects/${p.body.id}`, { sessionAt: "2030-03-04 10:30" })).status, 400);
+  assert.equal((await a("PATCH", `/projects/${p.body.id}`, { folderUrl: "ftp://x" })).status, 400);
+  const d = await a("POST", `/projects/${p.body.id}/duplicate`, { title: "Monthly reel (April)" });
+  const copy = d.body.data.projects.find(x => x.id === d.body.id);
+  assert.equal(copy.status, "lead");
+  assert.equal(copy.clientId, c.body.id);
+  assert.equal(copy.folderUrl, "https://drive.google.com/x");
+  assert.equal(copy.sessionAt, null);
+  assert.equal(d.body.data.deliverables.filter(x => x.projectId === copy.id).length, 1);
+  await a("PATCH", `/projects/${p.body.id}`, { status: "delivered" });
+  let data;
+  for (const pay of (await a("GET", "/data")).body.data.payments.filter(x => x.projectId === p.body.id))
+    data = (await a("PATCH", `/payments/${pay.id}`, { paidAt: "2030-03-10", method: "cash" })).body.data;
+  assert.equal(data.projects.find(x => x.id === p.body.id).status, "archived");
+});
+
+test("calendar feed: off by default, private link, valid iCalendar", async () => {
+  const a = agent();
+  await signup(a, "cal@example.com", { examples: true, lang: "ar" });
+  assert.equal((await a("GET", "/data")).body.data.me.calToken, null);
+  const on = await a("POST", "/me/calendar", {});
+  const token = on.body.data.me.calToken;
+  assert.ok(token.length > 20);
+  const r = await fetch(`${base}/cal/${token}.ics`);
+  assert.equal(r.status, 200);
+  assert.match(r.headers.get("content-type"), /text\/calendar/);
+  const ics = await r.text();
+  assert.match(ics, /^BEGIN:VCALENDAR\r\n/);
+  assert.ok(ics.includes("SUMMARY:تسليم"));
+  assert.ok(/DTSTART:\d{8}T100000/.test(ics), "timed session event");
+  assert.ok(ics.split("\r\n").every(l => Buffer.byteLength(l) <= 75), "lines folded to 75 octets");
+  await a("DELETE", "/me/calendar");
+  assert.equal((await fetch(`${base}/cal/${token}.ics`)).status, 404);
+  assert.equal((await fetch(`${base}/cal/nope.ics`)).status, 404);
+});
+
+test("Google Calendar: connect, sync changes, disconnect", async () => {
+  const a = agent();
+  await signup(a, "gcal@example.com", { examples: true });
+  assert.deepEqual((await a("GET", "/data")).body.data.me.google, { available: true, connected: false });
+  const go = await a("GET", "/google/connect?tz=Africa/Cairo");
+  assert.equal(go.status, 302);
+  const auth = new URL(go.location);
+  assert.equal(auth.searchParams.get("scope"), "https://www.googleapis.com/auth/calendar.app.created");
+  assert.equal(auth.searchParams.get("redirect_uri"), "https://fm.example/api/google/callback");
+  const state = auth.searchParams.get("state");
+  assert.equal((await a("GET", `/google/callback?code=good-code&state=wrong`)).location, "/#settings/google-error");
+  // The bad attempt cleared the state cookie, so start again.
+  const go2 = await a("GET", "/google/connect");
+  const state2 = new URL(go2.location).searchParams.get("state");
+  assert.notEqual(state, state2);
+  assert.equal((await a("GET", `/google/callback?code=good-code&state=${state2}`)).location, "/#settings/google-ok");
+  await a("POST", "/google/sync", {});
+  const me = (await a("GET", "/data")).body.data.me;
+  assert.equal(me.google.connected, true);
+  assert.equal(me.google.lastError, "");
+  assert.equal(me.tz, "Africa/Cairo");
+  const [cal] = [...G.calendars.values()];
+  assert.equal(cal.timeZone, "Africa/Cairo");
+  const n = cal.events.size;
+  assert.ok(n >= 5, `events: ${n}`);
+  const session = [...cal.events.values()].find(e => e.start.dateTime);
+  assert.equal(session.start.timeZone, "Africa/Cairo");
+
+  // Changing a due date updates the event; deleting a project removes its events (sync runs after each change).
+  const data = (await a("GET", "/data")).body.data;
+  const proj = data.projects.find(p => p.status === "active");
+  await a("PATCH", `/projects/${proj.id}`, { dueDate: "2031-01-15" });
+  await new Promise(r => setTimeout(r, 150));
+  assert.ok([...cal.events.values()].some(e => e.start.date === "2031-01-15"));
+  await a("DELETE", `/projects/${proj.id}`);
+  await new Promise(r => setTimeout(r, 150));
+  assert.ok(cal.events.size < n);
+
+  // If the user deletes the calendar in Google, the next sync makes a new one.
+  G.calendars.clear();
+  await a("POST", "/google/sync", {});
+  assert.equal(G.calendars.size, 1);
+  assert.ok([...G.calendars.values()][0].events.size > 0);
+
+  await a("DELETE", "/google");
+  assert.equal(G.calendars.size, 0);
+  assert.deepEqual(G.revoked, ["rt-1"]);
+  assert.equal((await a("GET", "/data")).body.data.me.google.connected, false);
 });

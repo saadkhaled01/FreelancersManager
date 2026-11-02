@@ -1,4 +1,4 @@
-import { insert, log, now } from "./model.js";
+import { insert, log, now, nextCode } from "./model.js";
 
 const day = n => {
   const d = new Date();
@@ -18,7 +18,9 @@ const EXAMPLES = {
     projects: [
       { c: 0, title: "فيديو إطلاق منتج (مثال)", type: "فيديو", status: "with_client", start: -12, due: 3, fee: 12000, rev: [3, 1], paid: [true, false],
         deliverables: [["نسخة 16:9 كاملة", true], ["نسخة 9:16 للريلز", false], ["3 كتات 15 ثانية", false]],
-        link: { url: "https://drive.google.com/example-v2", label: "النسخة 2" } },
+        link: { url: "https://drive.google.com/example-v2", label: "النسخة 2" }, folder: "https://drive.google.com/drive/folders/example" },
+      { c: 0, title: "تصوير منيو الخريف (مثال)", type: "تصوير", status: "booked", start: 0, due: 8, fee: 5000, rev: [2, 0], paid: [false, false],
+        deliverables: [["30 صورة متعدلة", false]], session: [2, "10:00"] },
       { c: 1, title: "ريلز رمضان ×6 (مثال)", type: "ريلز", status: "active", start: -5, due: 9, fee: 8000, rev: [2, 0], paid: [true, false],
         deliverables: [["ريل 1", true], ["ريل 2", true], ["ريل 3", true], ["ريل 4", false], ["ريل 5", false], ["ريل 6", false]] },
       { c: 2, title: "تصوير فرح (مثال)", type: "تصوير", status: "delivered", start: -40, due: -9, fee: 9000, rev: [2, 2], paid: [true, false],
@@ -37,7 +39,9 @@ const EXAMPLES = {
     projects: [
       { c: 0, title: "Product launch video (example)", type: "Video", status: "with_client", start: -12, due: 3, fee: 2400, rev: [3, 1], paid: [true, false],
         deliverables: [["Full 16:9 master", true], ["9:16 cut for Reels", false], ["Three 15s cutdowns", false]],
-        link: { url: "https://drive.google.com/example-v2", label: "Version 2" } },
+        link: { url: "https://drive.google.com/example-v2", label: "Version 2" }, folder: "https://drive.google.com/drive/folders/example" },
+      { c: 0, title: "Autumn menu shoot (example)", type: "Photo", status: "booked", start: 0, due: 8, fee: 900, rev: [2, 0], paid: [false, false],
+        deliverables: [["30 edited photos", false]], session: [2, "10:00"] },
       { c: 1, title: "Six launch reels (example)", type: "Reels", status: "active", start: -5, due: 9, fee: 1800, rev: [2, 0], paid: [true, false],
         deliverables: [["Reel 1", true], ["Reel 2", true], ["Reel 3", true], ["Reel 4", false], ["Reel 5", false], ["Reel 6", false]] },
       { c: 2, title: "Wedding film (example)", type: "Photo & video", status: "delivered", start: -40, due: -9, fee: 3200, rev: [2, 2], paid: [true, false],
@@ -52,14 +56,14 @@ export function seedExamples(db, userId, lang) {
   const ex = EXAMPLES[lang] || EXAMPLES.ar;
   const t = now();
   const clientIds = ex.clients.map(c => insert(db, "clients", { ...c, user_id: userId, notes: "", email: "", created_at: t, updated_at: t }));
-  let code = 1001;
   for (const p of ex.projects) {
     const statusAt = p.status === "lead" ? ago(4) : ago(2);
     const id = insert(db, "projects", {
-      user_id: userId, client_id: clientIds[p.c], code: `FM-${code++}`, title: p.title, type: p.type, status: p.status,
+      user_id: userId, client_id: clientIds[p.c], code: nextCode(db, userId), title: p.title, type: p.type, status: p.status,
       start_date: p.start == null ? null : day(p.start), due_date: day(p.due), fee: p.fee,
       revisions_allowed: p.rev[0], revisions_used: p.rev[1],
       links: JSON.stringify(p.link ? [{ ...p.link, at: day(-2) }] : []), notes: "",
+      session_at: p.session ? `${day(p.session[0])}T${p.session[1]}` : null, folder_url: p.folder || "",
       status_at: statusAt, created_at: ago(p.start == null ? 4 : -p.start), updated_at: t,
     });
     const deposit = Math.round(p.fee / 2);
@@ -72,5 +76,4 @@ export function seedExamples(db, userId, lang) {
     log(db, userId, id, "created", {});
     if (p.link) log(db, userId, id, "link", { url: p.link.url, label: p.link.label });
   }
-  db.prepare("UPDATE users SET next_code = ? WHERE id = ?").run(code, userId);
 }

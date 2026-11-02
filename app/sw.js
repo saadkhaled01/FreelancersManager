@@ -1,5 +1,5 @@
 /* App shell cache. Network first so updates show up immediately; cache is the offline fallback. API calls are never cached here. */
-const CACHE = "fm-shell-v1";
+const CACHE = "fm-shell-v2";
 const SHELL = ["/", "/app.css", "/app.js", "/i18n.js", "/manifest.webmanifest", "/icon.svg", "/icon-192.png"];
 
 self.addEventListener("install", e => {

@@ -99,11 +99,44 @@ CREATE INDEX IF NOT EXISTS activity_user ON activity(user_id, at);
 CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
 `;
 
+/* Schema changes after the first release. Each runs once, in order; PRAGMA user_version records how many have run. */
+const MIGRATIONS = [
+  "ALTER TABLE users ADD COLUMN cal_token TEXT",
+  "CREATE UNIQUE INDEX IF NOT EXISTS users_cal_token ON users(cal_token)",
+  "ALTER TABLE projects ADD COLUMN session_at TEXT",
+  "ALTER TABLE projects ADD COLUMN folder_url TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE users ADD COLUMN tz TEXT NOT NULL DEFAULT ''",
+  `CREATE TABLE IF NOT EXISTS google(
+    user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    refresh_token TEXT NOT NULL,
+    access_token TEXT NOT NULL DEFAULT '',
+    access_expires INTEGER NOT NULL DEFAULT 0,
+    calendar_id TEXT NOT NULL DEFAULT '',
+    connected_at TEXT NOT NULL,
+    last_sync TEXT,
+    last_error TEXT NOT NULL DEFAULT ''
+  )`,
+  `CREATE TABLE IF NOT EXISTS gcal_events(
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    uid TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    hash TEXT NOT NULL,
+    PRIMARY KEY(user_id, uid)
+  )`,
+];
+
 export function openDb(file) {
   if (file !== ":memory:") fs.mkdirSync(path.dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
   db.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;");
   db.exec(SCHEMA);
+  const done = db.prepare("PRAGMA user_version").get().user_version;
+  for (let i = done; i < MIGRATIONS.length; i++) {
+    tx(db, () => {
+      db.exec(MIGRATIONS[i]);
+      db.exec(`PRAGMA user_version = ${i + 1}`);
+    });
+  }
   return db;
 }
 

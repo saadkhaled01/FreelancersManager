@@ -1,4 +1,6 @@
-export const STATUSES = ["lead", "active", "with_client", "revising", "delivered", "archived"];
+/* Pipeline, after Sorah Ops: brief → booked → in production → client review ⇄ revisions → delivered → done. */
+export const STATUSES = ["lead", "booked", "active", "with_client", "revising", "delivered", "archived"];
+export const OPEN = ["lead", "booked", "active", "with_client", "revising"];
 export const METHODS = ["", "instapay", "vcash", "cash", "bank", "other"];
 export const PAY_KINDS = ["deposit", "balance", "extra"];
 export const CURRENCIES = ["EGP", "USD", "EUR", "SAR", "AED", "KWD", "QAR", "GBP"];
@@ -30,6 +32,8 @@ export const SPECS = {
     status: { col: "status", type: "enum", values: STATUSES },
     startDate: { col: "start_date", type: "date" },
     dueDate: { col: "due_date", type: "date" },
+    sessionAt: { col: "session_at", type: "datetime" },
+    folderUrl: { col: "folder_url", type: "url" },
     fee: { col: "fee", type: "money" },
     revisionsAllowed: { col: "revisions_allowed", type: "int", min: 0, max: 50 },
     revisionsUsed: { col: "revisions_used", type: "int", min: 0, max: 99 },
@@ -65,9 +69,11 @@ export const ME_SPEC = {
   depositPct: { col: "deposit_pct", type: "int", min: 0, max: 100 },
   revisions: { col: "revisions", type: "int", min: 0, max: 50 },
   templates: { col: "templates", type: "templates" },
+  tz: { col: "tz", type: "tz" },
 };
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const DATETIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/;
 const bad = field => new HttpError(400, "invalid", { field });
 
 function coerce(spec, key, v) {
@@ -87,6 +93,17 @@ function coerce(spec, key, v) {
       if (v == null || v === "") return null;
       if (typeof v !== "string" || !DATE_RE.test(v) || isNaN(Date.parse(v))) throw bad(key);
       return v;
+    case "datetime":
+      if (v == null || v === "") return null;
+      if (typeof v !== "string" || !DATETIME_RE.test(v) || isNaN(Date.parse(v))) throw bad(key);
+      return v;
+    case "url": {
+      if (v == null || v === "") return "";
+      if (typeof v !== "string") throw bad(key);
+      v = v.trim();
+      if (!/^https?:\/\/\S+$/i.test(v) || v.length > 1000) throw bad(key);
+      return v;
+    }
     case "money": {
       const n = typeof v === "string" ? Number(v) : v;
       if (typeof n !== "number" || !isFinite(n) || n < 0 || n > 1e10) throw bad(key);
@@ -113,6 +130,11 @@ function coerce(spec, key, v) {
         return { url, label, at };
       }));
     }
+    case "tz":
+      if (v == null || v === "") return "";
+      if (typeof v !== "string" || v.length > 64) throw bad(key);
+      try { new Intl.DateTimeFormat("en", { timeZone: v }); } catch { throw bad(key); }
+      return v;
     case "templates": {
       if (!v || typeof v !== "object" || Array.isArray(v)) throw bad(key);
       const out = {};
@@ -171,7 +193,21 @@ export function publicMe(u) {
     id: u.id, email: u.email, name: u.name, business: u.business, phone: u.phone,
     lang: u.lang, currency: u.currency, instapay: u.instapay, vcash: u.vcash,
     depositPct: u.deposit_pct, revisions: u.revisions, templates: JSON.parse(u.templates || "{}"),
+    calToken: u.cal_token || null, tz: u.tz || "",
   };
+}
+
+/* Project codes follow Sorah Ops: FM-YYMM-NNN, numbered per user per month. */
+export function nextCode(db, userId, date = new Date()) {
+  const prefix = `FM-${String(date.getFullYear()).slice(2)}${String(date.getMonth() + 1).padStart(2, "0")}-`;
+  const rows = db.prepare("SELECT code FROM projects WHERE user_id = ? AND code LIKE ?").all(userId, prefix + "%");
+  const n = rows.reduce((m, r) => Math.max(m, Number(r.code.slice(prefix.length)) || 0), 0) + 1;
+  return prefix + String(n).padStart(3, "0");
+}
+
+export function moneyFormatter(u) {
+  const label = u.currency === "EGP" ? (u.lang === "ar" ? "ج.م" : "EGP") : u.currency;
+  return n => `${(Math.round(n * 100) / 100).toLocaleString("en-US")} ${label}`;
 }
 
 export function snapshot(db, userId) {

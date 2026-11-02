@@ -28,6 +28,7 @@ const S = {
   route: { name: "today", id: null },
   filter: "all", q: "", clientQ: "",
   money: { month: today().slice(0, 7), state: "all", method: "all" },
+  calMonth: today().slice(0, 7),
   authTab: "signup", forgotSent: false, offline: false, tplKind: "quote", invLang: null,
   confirm: null, importData: null,
 };
@@ -62,11 +63,16 @@ function relDue(d) {
 }
 
 /* ============ derived data ============ */
-const ACTIVE = ["active", "with_client", "revising"];
-const STATUSES = ["lead", "active", "with_client", "revising", "delivered", "archived"];
+/* Pipeline, after Sorah Ops: brief → booked → in production → client review ⇄ revisions → delivered → (collecting) → done. */
+const STATUSES = ["lead", "booked", "active", "with_client", "revising", "delivered", "archived"];
+const OPEN = ["lead", "booked", "active", "with_client", "revising"];
+const ACTIVE = ["booked", "active", "with_client", "revising"]; // confirmed work with a deadline
+/* List groups: delivered projects that still owe money sit in their own "collecting" group, as in Sorah Ops. */
+const STAGES = ["lead", "booked", "active", "with_client", "revising", "delivered", "collecting", "archived"];
 const METHODS = ["instapay", "vcash", "cash", "bank", "other"];
 const STATUS = {
   lead: { c: "muted", color: "var(--line)" },
+  booked: { c: "acc", color: "var(--accent)" },
   active: { c: "acc", color: "var(--accent)" },
   with_client: { c: "warn", color: "var(--amber)" },
   revising: { c: "acc", color: "var(--accent)" },
@@ -106,6 +112,35 @@ function rank(p) {
   return 4;
 }
 const byPriority = (a, b) => rank(a) - rank(b) || (a.dueDate || "9999").localeCompare(b.dueDate || "9999") || b.id - a.id;
+const byDue = (a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999") || b.id - a.id;
+const stageOf = p => (p.status === "delivered" && projMoney(p).owed > 0 ? "collecting" : p.status);
+const daysLeft = p => (OPEN.includes(p.status) && p.dueDate ? daysBetween(today(), p.dueDate) : null);
+const userTz = () => D()?.me.tz || Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+/* Session times are local "YYYY-MM-DDTHH:MM" strings. */
+function addHoursLocal(s, h) {
+  const [d, tm] = s.split("T"), [y, m, dd] = d.split("-").map(Number), [hh, mm] = tm.split(":").map(Number);
+  const x = new Date(y, m - 1, dd, hh + h, mm);
+  return `${iso(x)}T${pad(x.getHours())}:${pad(x.getMinutes())}`;
+}
+/* Numeric dates as in Sorah Ops (02/11/2026), built by hand: Intl's Arabic output carries direction marks that scramble inside LTR text. */
+const fnum = s => `${s.slice(8, 10)}/${s.slice(5, 7)}/${s.slice(0, 4)}`;
+const fsession = s => `<span dir="ltr">${fnum(s.slice(0, 10))} - ${s.slice(11, 16)}</span>`;
+
+/* "Open in Google Calendar": a prefilled event, no account link needed. Session if set, otherwise the due date. */
+function gcalLink(p) {
+  let dates;
+  if (p.sessionAt) dates = `${p.sessionAt.replace(/[-:]/g, "")}00/${addHoursLocal(p.sessionAt, 2).replace(/[-:]/g, "")}00`;
+  else if (p.dueDate) dates = `${p.dueDate.replace(/-/g, "")}/${addDays(p.dueDate, 1).replace(/-/g, "")}`;
+  else return "";
+  const c = clientOf(p);
+  const q = new URLSearchParams({
+    action: "TEMPLATE", dates, ctz: userTz(),
+    text: `${p.sessionAt ? t("session") : t("due")}: ${p.title}${c ? ` — ${c.name}` : ""}`,
+    details: [p.code, p.folderUrl].filter(Boolean).join("\n"),
+  });
+  return `https://calendar.google.com/calendar/render?${q}`;
+}
 const firstName = s => String(s || "").split(/\s+[—-]\s+|\s+/)[0];
 
 /* ============ WhatsApp ============ */
@@ -220,7 +255,7 @@ const isDark = () => {
 function renderChrome() {
   const authed = !!S.data;
   document.body.classList.toggle("authed", authed);
-  const cur = S.route.name === "project" ? "projects" : S.route.name === "client" ? "clients" : S.route.name === "invoice" ? "projects" : S.route.name;
+  const cur = { project: "projects", client: "clients", invoice: "projects", calendar: "today" }[S.route.name] || S.route.name;
   const links = NAV.map(n => `<a href="#${n}" ${cur === n ? `aria-current="page"` : ""}>${I[n]}<span>${t("nav_" + n)}</span></a>`).join("");
   $("#topbar").innerHTML = `
     <a class="brand" href="#today"><div class="mark">${t("brand_mark")}</div><div><b>${t("brand")}</b><span>${t("tagline")}</span></div></a>
@@ -247,10 +282,10 @@ function render() {
     return;
   }
   const r = S.route;
-  const views = { today: todayView, projects: projectsView, project: projectView, clients: clientsView, client: clientView, money: moneyView, settings: settingsView, invoice: invoiceView };
+  const views = { today: todayView, projects: projectsView, project: projectView, clients: clientsView, client: clientView, money: moneyView, settings: settingsView, invoice: invoiceView, calendar: calendarView };
   const fn = views[r.name] || todayView;
   v.innerHTML = (S.offline ? `<div class="banner warn"><span><b>${t("offline")}</b> ${t("offline_hint")}</span></div>` : "") + fn(r.id);
-  document.title = `${t("nav_" + (NAV.includes(r.name) ? r.name : r.name === "client" ? "clients" : "projects"))} · ${t("brand")}`;
+  document.title = `${r.name === "calendar" ? t("calendar") : t("nav_" + (NAV.includes(r.name) ? r.name : r.name === "client" ? "clients" : "projects"))} · ${t("brand")}`;
 }
 
 /* ============ small components ============ */
@@ -265,29 +300,39 @@ const payBadge = x => {
 const waBtn = (pid, kind = "", small = true) =>
   `<button class="btn btn-wa ${small ? "btn-sm" : ""}" data-act="msg" data-id="${pid}" data-kind="${kind}">${I.wa}${t("wa_client")}</button>`;
 
-function pcard(p) {
-  const c = clientOf(p), m = projMoney(p), st = STATUS[p.status];
-  const late = isLate(p);
-  const stripe = m.overdue > 0 || late ? "var(--danger)" : st.color;
-  const dels = delsOf(p.id), done = dels.filter(d => d.done).length;
-  const next = unpaidOf(p)[0];
-  const pct = p.fee > 0 ? Math.min(100, Math.round(m.paid / p.fee * 100)) : 0;
-  return `<article class="pj"><div class="stripe" style="background:${stripe}"></div><div class="main">
-    <div class="r1"><a class="who" href="#project/${p.id}">${esc(p.title)}</a>${stBadge(p)}
-      ${late ? badge("bad", relDue(p.dueDate)) : ""}${m.overdue ? badge("bad", t("overdue_amt", { amt: money(m.overdue) })) : ""}
-      ${overRev(p) ? badge("warn", t("over_rev")) : ""}</div>
-    <div class="sub"><span class="code">${esc(p.code)}</span>${c ? `<span>·</span><a href="#client/${c.id}">${esc(c.name)}</a>` : ""}${p.type ? `<span>·</span><span>${esc(p.type)}</span>` : ""}</div>
-    <div class="r2">
-      <span>${t("due")} <b>${p.dueDate ? fdate(p.dueDate) : "—"}</b>${p.dueDate && ACTIVE.includes(p.status) && !late ? ` · ${relDue(p.dueDate)}` : ""}</span>
-      ${p.status !== "lead" && p.revisionsAllowed ? `<span>${t("round_of", { n: p.revisionsUsed, of: p.revisionsAllowed })}</span>` : ""}
-      ${dels.length ? `<span>${t("dels_done", { n: done, of: dels.length })}</span>` : ""}
-      ${p.status === "lead" ? `<span>${t("quote_sent", { n: daysSince(p.statusAt) })}</span>` : ""}
+/* Project row, laid out like Sorah Ops: urgency stripe, code, client — title, type, dates and links; stage picker and actions on the end. */
+function prow(p) {
+  const c = clientOf(p), m = projMoney(p), stg = stageOf(p), n = daysLeft(p);
+  const stripe = n !== null ? (n < 0 ? "var(--danger)" : n <= 3 ? "var(--amber)" : "var(--line)")
+    : stg === "collecting" ? (m.overdue ? "var(--danger)" : "var(--amber)") : "var(--line)";
+  const days = n !== null
+    ? badge(n < 0 ? "bad" : n <= 3 ? "warn" : "muted", n < 0 ? t("late_by", { n: -n }) : n === 0 ? t("due_today") : t("days_left", { n }))
+    : stg === "collecting" ? badge(m.overdue ? "bad" : "warn", t("owed_amt", { amt: money(m.owed) })) : "";
+  const gc = gcalLink(p), last = p.links[p.links.length - 1];
+  const links = [
+    gc ? `<a href="${esc(gc)}" target="_blank" rel="noopener">${t("open_gcal")} ↗</a>` : "",
+    p.folderUrl ? `<a href="${esc(p.folderUrl)}" target="_blank" rel="noopener">${t("open_folder")} ↗</a>` : "",
+    last ? `<a href="${esc(last.url)}" target="_blank" rel="noopener">${esc(last.label || t("latest_version"))} ↗</a>` : "",
+  ].filter(Boolean).join("");
+  const dels = delsOf(p.id);
+  return `<article class="pr"><div class="stripe" style="background:${stripe}"></div>
+    <div class="main">
+      <div class="r1"><span class="code">${esc(p.code)}</span><a class="who" href="#project/${p.id}">${c ? `<bdi>${esc(c.company || c.name)}</bdi> — ` : ""}<bdi>${esc(p.title)}</bdi></a>${p.type ? badge("muted", p.type) : ""}${overRev(p) ? badge("warn", t("over_rev")) : ""}</div>
+      <div class="meta">
+        ${p.sessionAt ? `<span>${t("session")}: <b>${fsession(p.sessionAt)}</b></span>` : ""}
+        <span>${t("due")}: <b dir="ltr">${p.dueDate ? fnum(p.dueDate) : "—"}</b></span>
+        ${p.fee > 0 ? (p.status === "lead" ? `<span>${t("quote")}: <b class="mono">${money(p.fee)}</b></span>` : `<span>${t("paid")}: <b class="mono">${fmtNum(m.paid)} / ${money(p.fee)}</b></span>`) : ""}
+        ${ACTIVE.includes(p.status) && p.revisionsAllowed ? `<span>${t("round_of", { n: p.revisionsUsed, of: p.revisionsAllowed })}</span>` : ""}
+      </div>
+      ${links ? `<div class="meta lk">${links}</div>` : ""}
     </div>
-    ${p.status === "lead"
-      ? `<div class="pay">${t("quote")} <b class="mono" style="color:var(--ink)">${money(p.fee)}</b></div>`
-      : p.fee > 0 ? `<div class="pay"><div class="bar"><i style="width:${pct}%"></i></div><span class="mono"><b style="color:var(--ink)">${fmtNum(m.paid)}</b> / ${money(p.fee)}</span></div>` : ""}
-    <div class="acts">${waBtn(p.id)}${next && p.status !== "lead" ? `<button class="btn btn-ghost btn-sm" data-act="markPaid" data-id="${next.id}">${t("log_payment")}</button>` : ""}<a class="btn btn-ghost btn-sm" href="#project/${p.id}">${t("open")}</a></div>
-  </div></article>`;
+    <div class="ctrl">${days}
+      <select class="input stage" data-stage="${p.id}" aria-label="${t("f_status")}: ${esc(p.title)}">${STATUSES.map(x => `<option value="${x}" ${p.status === x ? "selected" : ""}>${t("st_" + x)}</option>`).join("")}</select>
+      <a class="btn btn-ghost btn-sm" href="#project/${p.id}">${t("deliverables")} (${dels.length})</a>
+      <button class="icon-btn sm wa" data-act="msg" data-id="${p.id}" aria-label="${t("wa_client")}" title="${t("wa_client")}">${I.wa}</button>
+      <button class="icon-btn sm" data-act="editProject" data-id="${p.id}" aria-label="${t("edit")}" title="${t("edit")}">✎</button>
+      <button class="icon-btn sm" data-act="delProject" data-id="${p.id}" aria-label="${t("delete")}" title="${t("delete")}">✕</button>
+    </div></article>`;
 }
 
 /* ============ auth ============ */
@@ -348,6 +393,8 @@ function todayView() {
   const due = ps.filter(p => ACTIVE.includes(p.status) && p.dueDate && p.dueDate <= week).sort(byPriority);
   const dels = D().deliverables.filter(d => !d.done && d.dueDate && d.dueDate <= week && ACTIVE.includes(P(d.projectId)?.status))
     .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+  const sessions = ps.filter(p => OPEN.includes(p.status) && p.sessionAt && p.sessionAt.slice(0, 10) >= td && p.sessionAt.slice(0, 10) <= week)
+    .sort((a, b) => a.sessionAt.localeCompare(b.sessionAt));
   const chase = D().payments.filter(x => !x.paidAt && x.dueDate && x.dueDate <= week && P(x.projectId)?.status !== "lead")
     .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
   const waiting = ps.filter(p => (p.status === "lead" || p.status === "with_client") && daysSince(p.statusAt) >= 3)
@@ -356,6 +403,12 @@ function todayView() {
   const me = D().me;
 
   const dueRows = [
+    ...sessions.map(p => {
+      const c = clientOf(p), d = p.sessionAt.slice(0, 10);
+      return `<div class="ri"><span class="dot" style="background:var(--accent)"></span>
+        <div class="txt"><a href="#project/${p.id}">${esc(p.title)}</a><span class="hint">${c ? esc(c.name) + " · " : ""}${t("session")} · <span dir="ltr">${p.sessionAt.slice(11, 16)}</span></span></div>
+        ${badge(d === td ? "warn" : "acc", d === td ? t("due_today") : fdate(d))}</div>`;
+    }),
     ...due.map(p => {
       const c = clientOf(p), late = isLate(p);
       return `<div class="ri"><span class="dot" style="background:${late ? "var(--danger)" : STATUS[p.status].color}"></span>
@@ -393,7 +446,7 @@ function todayView() {
   const owed = sum(ps, p => projMoney(p).owed), overdue = sum(ps, p => projMoney(p).overdue);
   return `
     <div class="toolbar"><div><h1>${t("hello", { name: esc(firstName(me.name)) })}</h1><span class="hint">${fdateLong(td)}</span></div>
-      <div class="acts"><button class="btn btn-ghost" data-act="newClient">+ ${t("client")}</button><button class="btn btn-primary" data-act="newProject">+ ${t("new_project")}</button></div></div>
+      <div class="acts"><a class="btn btn-ghost" href="#calendar">${t("calendar")}</a><button class="btn btn-ghost" data-act="newClient">+ ${t("client")}</button><button class="btn btn-primary" data-act="newProject">+ ${t("new_project")}</button></div></div>
     <div class="kpis">
       ${kpi(ps.filter(p => ACTIVE.includes(p.status)).length, t("k_active"))}
       ${kpi(due.length, t("k_due_week"), due.length ? "warn" : "")}
@@ -414,15 +467,6 @@ function todayView() {
 }
 
 /* ============ projects ============ */
-const FILTERS = {
-  all: p => p.status !== "archived",
-  active: p => p.status === "active" || p.status === "revising",
-  with_client: p => p.status === "with_client",
-  unpaid: p => projMoney(p).owed > 0,
-  lead: p => p.status === "lead",
-  delivered: p => p.status === "delivered",
-  archived: p => p.status === "archived",
-};
 function projectMatches(p) {
   const q = S.q.trim().toLowerCase();
   if (!q) return true;
@@ -430,26 +474,37 @@ function projectMatches(p) {
   return [p.title, p.code, p.type, c?.name, c?.company].some(s => String(s || "").toLowerCase().includes(q));
 }
 function projectsList() {
-  const list = D().projects.filter(FILTERS[S.filter] || FILTERS.all).filter(projectMatches).sort(byPriority);
-  if (list.length) return list.map(pcard).join("");
+  const all = D().projects.filter(projectMatches);
   if (!D().projects.length) return empty(t("no_projects"), t("first_project_hint"), `<button class="btn btn-primary" data-act="newProject">+ ${t("new_project")}</button>`);
-  return empty(t("no_match"), t("no_match_hint"));
+  if (S.filter === "all") {
+    const html = STAGES.filter(x => x !== "archived").map(x => {
+      const g = all.filter(p => stageOf(p) === x).sort(byDue);
+      return g.length ? `<h2 class="group">${t("st_" + x)} <span>(${g.length})</span></h2>${g.map(prow).join("")}` : "";
+    }).join("");
+    return html || empty(t("no_match"), t("no_match_hint"));
+  }
+  const list = all.filter(p => stageOf(p) === S.filter).sort(byDue);
+  return list.length ? list.map(prow).join("") : empty(t("no_match"), t("no_match_hint"));
 }
 function projectsView() {
-  const ps = D().projects, week = addDays(today(), 7);
-  const owed = sum(ps, p => projMoney(p).owed), overdue = sum(ps, p => projMoney(p).overdue);
-  const dueWeek = ps.filter(p => ACTIVE.includes(p.status) && p.dueDate && p.dueDate <= week).length;
+  const ps = D().projects;
+  if (S.filter !== "all" && !STAGES.includes(S.filter)) S.filter = "all";
+  const open = ps.filter(p => OPEN.includes(p.status));
+  const near = open.filter(p => { const n = daysLeft(p); return n !== null && n >= 0 && n <= 3; }).length;
+  const late = open.filter(p => daysLeft(p) < 0).length;
+  const owed = sum(ps, p => projMoney(p).owed);
   return `
     <div class="toolbar"><h1>${t("nav_projects")}</h1>
       <input class="input grow" id="pq" type="search" placeholder="${t("search_projects")}" value="${esc(S.q)}" aria-label="${t("search_projects")}">
-      <button class="btn btn-primary" data-act="newProject">+ ${t("new_project")}</button></div>
+      <div class="acts"><a class="btn btn-ghost" href="#calendar">${t("calendar")}</a><button class="btn btn-primary" data-act="newProject">+ ${t("new_project")}</button></div></div>
     <div class="kpis">
-      ${kpi(ps.filter(p => ACTIVE.includes(p.status)).length, t("k_active"))}
-      ${kpi(dueWeek, t("k_due_week"), dueWeek ? "warn" : "")}
-      ${kpi(moneyHtml(owed), t("k_owed"))}
-      ${kpi(moneyHtml(overdue), t("k_overdue"), overdue ? "bad" : "")}
+      ${kpi(open.length, t("k_open"))}
+      ${kpi(near, t("k_near"), near ? "warn" : "")}
+      ${kpi(late, t("k_late"), late ? "bad" : "")}
+      ${kpi(moneyHtml(owed), t("k_collect"), owed ? "" : "good")}
     </div>
-    <div class="chips">${Object.keys(FILTERS).map(f => `<button class="chip" data-act="filter" data-v="${f}" aria-pressed="${S.filter === f}">${t("f_" + f)}<span class="n">${ps.filter(FILTERS[f]).length}</span></button>`).join("")}</div>
+    <div class="toolbar"><div class="chips">${["all", ...STAGES].map(f => `<button class="chip" data-act="filter" data-v="${f}" aria-pressed="${S.filter === f}">${t(f === "all" ? "f_all" : "st_" + f)}${f === "all" ? "" : `<span class="n">${ps.filter(p => stageOf(p) === f).length}</span>`}</button>`).join("")}</div>
+      <span class="hint">${t("projects_total", { n: ps.length })}</span></div>
     <div class="list" id="plist">${projectsList()}</div>`;
 }
 
@@ -463,10 +518,14 @@ function projectView(id) {
 
   const quick = [];
   quick.push(waBtn(p.id, defaultKind(p), false));
-  if (p.status === "lead") quick.push(`<button class="btn btn-primary" data-act="status" data-id="${p.id}" data-v="active">${t("won")}</button>`);
-  if (ACTIVE.includes(p.status)) quick.push(`<button class="btn btn-primary" data-act="sendVersion" data-id="${p.id}">${t("send_version")}</button>`);
+  if (p.status === "lead") quick.push(`<button class="btn btn-primary" data-act="status" data-id="${p.id}" data-v="booked">${t("won")}</button>`);
+  if (p.status === "booked") quick.push(`<button class="btn btn-primary" data-act="status" data-id="${p.id}" data-v="active">${t("start_work")}</button>`);
+  if (["active", "revising"].includes(p.status)) quick.push(`<button class="btn btn-primary" data-act="sendVersion" data-id="${p.id}">${t("send_version")}</button>`);
   if (p.status === "with_client") quick.push(`<button class="btn btn-ghost" data-act="status" data-id="${p.id}" data-v="revising">${t("wants_changes")}</button>`);
-  if (ACTIVE.includes(p.status)) quick.push(`<button class="btn btn-ghost" data-act="status" data-id="${p.id}" data-v="delivered">${t("mark_delivered")}</button>`);
+  if (["active", "with_client", "revising"].includes(p.status)) quick.push(`<button class="btn btn-ghost" data-act="status" data-id="${p.id}" data-v="delivered">${t("mark_delivered")}</button>`);
+  const gc = gcalLink(p);
+  if (gc) quick.push(`<a class="btn btn-ghost" href="${esc(gc)}" target="_blank" rel="noopener">${t("open_gcal")} ↗</a>`);
+  if (p.folderUrl) quick.push(`<a class="btn btn-ghost" href="${esc(p.folderUrl)}" target="_blank" rel="noopener">${t("open_folder")} ↗</a>`);
   if (p.status === "delivered" && !m.owed) quick.push(`<button class="btn btn-ghost" data-act="status" data-id="${p.id}" data-v="archived">${t("archive")}</button>`);
 
   const delRows = dels.map(d => `<div class="todo ${d.done ? "done" : ""}">
@@ -494,12 +553,13 @@ function projectView(id) {
           <h1 style="font-size:24px">${esc(p.title)}</h1>
           ${c ? `<div class="sub"><a href="#client/${c.id}">${esc(c.name)}</a>${c.phone ? `<span>·</span><span class="mono ltr">${esc(c.phone)}</span>` : ""}</div>` : `<div class="sub">${t("no_client")}</div>`}
         </div>
-        <div class="acts"><a class="btn btn-ghost btn-sm" href="#invoice/${p.id}">${p.status === "lead" ? t("quote") : t("invoice")}</a>
+        <div class="acts"><button class="btn btn-ghost btn-sm" data-act="duplicate" data-id="${p.id}">${t("duplicate")}</button><a class="btn btn-ghost btn-sm" href="#invoice/${p.id}">${p.status === "lead" ? t("quote") : t("invoice")}</a>
           <button class="btn btn-ghost btn-sm" data-act="editProject" data-id="${p.id}">${t("edit")}</button>
           <button class="btn btn-danger btn-sm" data-act="delProject" data-id="${p.id}">${t("delete")}</button></div>
       </div>
       <div class="chips" aria-label="${t("f_status")}">${STATUSES.map(s => `<button class="chip" data-act="status" data-id="${p.id}" data-v="${s}" aria-pressed="${p.status === s}">${t("st_" + s)}</button>`).join("")}</div>
       <div class="facts">
+        ${p.sessionAt ? `<div class="fact"><span class="k">${t("session")}</span><span class="v">${fsession(p.sessionAt)}</span></div>` : ""}
         <div class="fact"><span class="k">${t("f_dueDate")}</span><span class="v">${fdate(p.dueDate)}</span>${p.dueDate && ACTIVE.includes(p.status) ? `<span class="hint">${relDue(p.dueDate)}</span>` : ""}</div>
         <div class="fact"><span class="k">${t("f_startDate")}</span><span class="v">${fdate(p.startDate)}</span></div>
         <div class="fact"><span class="k">${t("f_fee")}</span><span class="v mono">${money(p.fee)}</span></div>
@@ -609,7 +669,58 @@ function clientView(id) {
       ${c.notes ? `<div style="white-space:pre-wrap; font-size:13.5px">${esc(c.notes)}</div>` : ""}
     </section>
     <div class="toolbar"><h2 style="font-size:18px">${t("projects_n", { n: s.ps.length })}</h2><button class="btn btn-primary btn-sm" data-act="newProject" data-client="${c.id}">+ ${t("new_project")}</button></div>
-    <div class="list">${s.ps.sort(byPriority).map(pcard).join("") || empty(t("no_projects"), t("client_no_projects"))}</div>`;
+    <div class="list">${s.ps.sort(byPriority).map(prow).join("") || empty(t("no_projects"), t("client_no_projects"))}</div>`;
+}
+
+/* ============ calendar ============ */
+/* Same rules as the server's calendar feed: sessions and due dates of open projects, open deliverables, unpaid payments. */
+function calEvents() {
+  const out = [];
+  for (const p of D().projects) {
+    if (!OPEN.includes(p.status)) continue;
+    if (p.sessionAt) out.push({ date: p.sessionAt.slice(0, 10), time: p.sessionAt.slice(11, 16), kind: "session", p, label: p.title });
+    if (p.dueDate) out.push({ date: p.dueDate, kind: p.dueDate < today() ? "late" : "due", p, label: p.title });
+  }
+  for (const d of D().deliverables) {
+    const p = P(d.projectId);
+    if (d.dueDate && !d.done && p && OPEN.includes(p.status)) out.push({ date: d.dueDate, kind: "deliverable", p, label: d.label });
+  }
+  for (const x of D().payments) {
+    const p = P(x.projectId);
+    if (x.dueDate && !x.paidAt && p && p.status !== "lead" && p.status !== "archived")
+      out.push({ date: x.dueDate, kind: payState(x) === "overdue" ? "overdue" : "payment", p, label: money(x.amount) });
+  }
+  return out.sort((a, b) => a.date.localeCompare(b.date) || (a.time || "99").localeCompare(b.time || "99"));
+}
+const evChip = e => `<a class="ev ev-${e.kind}" href="#project/${e.p.id}" title="${esc(t("ev_" + e.kind))}: ${esc(e.p.title)}">${e.time ? `<b dir="ltr">${e.time}</b> ` : ""}${esc(e.label)}</a>`;
+
+function calendarView() {
+  const ym = S.calMonth, [y, m] = ym.split("-").map(Number);
+  const first = new Date(y, m - 1, 1), daysIn = new Date(y, m, 0).getDate();
+  const weekStart = S.lang === "ar" ? 6 : 1; // Saturday in Egypt, Monday otherwise
+  const offset = (first.getDay() - weekStart + 7) % 7;
+  const start = addDays(iso(first), -offset);
+  const cells = Math.ceil((offset + daysIn) / 7) * 7;
+  const evs = calEvents(), byDay = new Map();
+  for (const e of evs) { if (!byDay.has(e.date)) byDay.set(e.date, []); byDay.get(e.date).push(e); }
+  const td = today();
+  const heads = Array.from({ length: 7 }, (_, i) => `<div class="wd">${esc(fdate(addDays(start, i), S.lang, { weekday: "short" }))}</div>`).join("");
+  const grid = Array.from({ length: cells }, (_, i) => {
+    const d = addDays(start, i), list = byDay.get(d) || [];
+    return `<div class="day ${d.slice(0, 7) !== ym ? "out" : ""} ${d === td ? "now" : ""}"><span class="dn">${Number(d.slice(8))}</span>
+      ${list.slice(0, 3).map(evChip).join("")}${list.length > 3 ? `<span class="more">${t("more_n", { n: list.length - 3 })}</span>` : ""}</div>`;
+  }).join("");
+  const monthDays = [...byDay.keys()].filter(d => d.startsWith(ym));
+  const agenda = monthDays.map(d => `<div class="agday ${d === td ? "now" : ""}"><div class="agd">${esc(fdate(d))}</div><div class="agl">${byDay.get(d).map(evChip).join("")}</div></div>`).join("");
+  const legend = ["session", "due", "late", "deliverable", "payment", "overdue"].map(k => `<span class="lg"><i class="ev-${k}"></i>${t("ev_" + k)}</span>`).join("");
+  return `
+    <a class="back" href="#today">${I.back}${t("nav_today")}</a>
+    <div class="toolbar"><h1>${t("calendar")}</h1>
+      <div class="monthnav"><button class="icon-btn" data-act="calMonth" data-v="-1" aria-label="${t("prev_month")}">${S.lang === "ar" ? "›" : "‹"}</button><b>${esc(monthLabel(ym))}</b><button class="icon-btn" data-act="calMonth" data-v="1" aria-label="${t("next_month")}">${S.lang === "ar" ? "‹" : "›"}</button>
+        <button class="btn btn-ghost btn-sm" data-act="calMonth" data-v="0">${t("this_month")}</button></div></div>
+    <div class="legend">${legend}<a class="hint" href="#settings/calendar" style="margin-inline-start:auto">${t("cal_sync_link")}</a></div>
+    <section class="panel cal-grid"><div class="cal">${heads}${grid}</div></section>
+    <section class="panel cal-agenda">${agenda || empty(t("cal_empty"), t("cal_empty_hint"))}</section>`;
 }
 
 /* ============ money ============ */
@@ -706,6 +817,7 @@ function settingsView() {
             </div>
             <div><button class="btn btn-primary" type="submit">${t("save")}</button></div>
           </form></section>
+        ${calendarPanel()}
         <section class="panel"><h2 style="font-size:16px">${t("your_data")}</h2>
           <span class="hint">${t("data_hint")}</span>
           <div class="acts"><a class="btn btn-ghost" href="/api/export" download>${t("export")}</a>
@@ -722,6 +834,34 @@ function settingsView() {
         </section>
       </div>
     </div>`;
+}
+
+function calendarPanel() {
+  const me = D().me, g = me.google || {};
+  const feed = me.calToken ? `${location.origin}/cal/${me.calToken}.ics` : "";
+  const googleBlock = !g.available
+    ? `<span class="hint">${t("gcal_unavailable")}</span>`
+    : g.connected
+      ? `<div class="r1">${badge(g.lastError ? "bad" : "good", g.lastError ? t("gcal_err_" + g.lastError) : t("gcal_connected"))}
+           ${g.lastSync ? `<span class="hint">${t("gcal_last_sync", { when: fdate(g.lastSync.slice(0, 10)) + " " + new Date(g.lastSync).toTimeString().slice(0, 5) })}</span>` : ""}</div>
+         <span class="hint">${t("gcal_connected_hint")}</span>
+         <div class="acts">${g.lastError === "revoked" ? `<a class="btn btn-primary btn-sm" href="/api/google/connect?tz=${encodeURIComponent(userTz())}">${t("gcal_reconnect")}</a>` : `<button class="btn btn-ghost btn-sm" data-act="gSync">${t("gcal_sync_now")}</button>`}
+           <button class="btn btn-danger btn-sm" data-act="gDisconnect">${t("gcal_disconnect")}</button></div>`
+      : `<span class="hint">${t("gcal_hint")}</span>
+         <div><a class="btn btn-primary" href="/api/google/connect?tz=${encodeURIComponent(userTz())}">${t("gcal_connect")}</a></div>`;
+  return `<section class="panel" id="calendar-settings"><h2 style="font-size:16px">${t("calendar")}</h2>
+    <div class="field"><span class="lbl">Google Calendar</span>${googleBlock}</div>
+    <div class="field" style="padding-top:10px; border-top:1px solid var(--line)"><span class="lbl">${t("feed_title")}</span>
+      <span class="hint">${t("feed_hint")}</span>
+      ${feed ? `<input class="input mono ltr" id="feedUrl" readonly value="${esc(feed)}" aria-label="${t("feed_title")}">
+        <div class="acts"><button class="btn btn-ghost btn-sm" data-act="copyFeed">${t("copy")}</button>
+          <a class="btn btn-ghost btn-sm" href="https://calendar.google.com/calendar/r?cid=${encodeURIComponent(feed.replace(/^https?:/, "webcal:"))}" target="_blank" rel="noopener">${t("feed_google")} ↗</a>
+          <a class="btn btn-ghost btn-sm" href="${esc(feed.replace(/^https?:/, "webcal:"))}">${t("feed_apple")}</a>
+          <button class="btn btn-danger btn-sm" data-act="feedOff">${t("feed_off")}</button></div>
+        <span class="hint">${t("feed_private")}</span>`
+      : `<div><button class="btn btn-ghost" data-act="feedOn">${t("feed_on")}</button></div>`}
+    </div>
+  </section>`;
 }
 
 /* ============ invoice / quote ============ */
@@ -793,15 +933,19 @@ function projectForm(id, { clientId } = {}) {
         <div class="field"><label for="pType">${t("f_type")}</label><input id="pType" name="type" maxlength="60" list="types" value="${esc(p?.type)}"><datalist id="types">${TYPES[S.lang].map(x => `<option value="${esc(x)}">`).join("")}</datalist></div>
       </div>
       <div class="grid2">
+        <div class="field"><label for="pStage">${t("f_status")}</label><select id="pStage" name="status">${STATUSES.map(x => `<option value="${x}" ${(p?.status || "lead") === x ? "selected" : ""}>${t("st_" + x)}</option>`).join("")}</select></div>
+        <div class="field"><label for="pSession">${t("f_sessionAt")}</label><input id="pSession" name="sessionAt" type="datetime-local" value="${p?.sessionAt || ""}"></div>
+      </div>
+      <div class="grid2">
         <div class="field"><label for="pStart">${t("f_startDate")}</label><input id="pStart" name="startDate" type="date" value="${p ? p.startDate || "" : today()}"></div>
         <div class="field"><label for="pDue">${t("f_dueDate")}</label><input id="pDue" name="dueDate" type="date" value="${p?.dueDate || ""}"></div>
       </div>
+      <div class="field"><label for="pFolder">${t("f_folderUrl")}</label><input id="pFolder" name="folderUrl" type="url" class="ltr" maxlength="1000" value="${esc(p?.folderUrl)}" placeholder="https://drive.google.com/drive/folders/…"></div>
       <div class="grid3">
         <div class="field"><label for="pFee">${t("f_fee")} (${esc(t("cur_" + me.currency))})</label><input id="pFee" name="fee" type="number" min="0" step="0.01" inputmode="decimal" class="mono" value="${p ? p.fee : ""}"></div>
         ${p ? "" : `<div class="field"><label for="pDep">${t("f_depositPct")}</label><input id="pDep" name="depositPct" type="number" min="0" max="100" value="${me.depositPct}"></div>`}
         <div class="field"><label for="pRev">${t("f_revisionsAllowed")}</label><input id="pRev" name="revisionsAllowed" type="number" min="0" max="50" value="${p ? p.revisionsAllowed : me.revisions}"></div>
       </div>
-      ${p ? "" : `<label class="check"><input type="checkbox" name="lead"><span>${t("is_lead")}</span></label>`}
       <span class="hint">${t(p ? "fee_edit_hint" : "new_project_hint")}</span>
       <div class="field"><label for="pNotes">${t("f_notes")}</label><textarea id="pNotes" name="notes" maxlength="8000">${esc(p?.notes)}</textarea></div>
       ${mfoot(p ? t("save") : t("create_project"))}
@@ -998,6 +1142,25 @@ const ACTS = {
       <div class="modal-actions"><button class="btn btn-danger" type="submit">${t("delete_account")}</button><button class="btn btn-ghost" type="button" data-act="close">${t("cancel")}</button></div></form>`);
   },
   confirmYes: () => S.confirm?.(),
+  calMonth: el => { const v = Number(el.dataset.v); S.calMonth = v ? shiftMonth(S.calMonth, v) : today().slice(0, 7); render(); },
+  duplicate: async el => {
+    const p = P(num(el.dataset.id));
+    const j = await mutate("POST", `/projects/${p.id}/duplicate`, { title: p.title }, t("duplicated"));
+    if (j) { S.editAfterRoute = j.id; go(`project/${j.id}`); }
+  },
+  gSync: async el => { el.disabled = true; await mutate("POST", "/google/sync", {}, t("gcal_synced")); },
+  gDisconnect: () => confirmBox(t("gcal_disconnect_confirm"), t("gcal_disconnect"), async () => {
+    if (await mutate("DELETE", "/google", undefined, t("gcal_disconnected"))) closeModal();
+  }),
+  feedOn: () => mutate("POST", "/me/calendar", {}),
+  feedOff: () => confirmBox(t("feed_off_confirm"), t("feed_off"), async () => {
+    if (await mutate("DELETE", "/me/calendar")) closeModal();
+  }),
+  copyFeed: async () => {
+    const el = $("#feedUrl");
+    try { await navigator.clipboard.writeText(el.value); toast(t("copied")); }
+    catch { el.select(); toast(t("copy_manual")); }
+  },
 };
 
 async function setLang(lang) {
@@ -1046,10 +1209,11 @@ const FORMS = {
   async project(o, form) {
     const id = num(form.dataset.id);
     const body = {
-      title: o.title, clientId: num(o.clientId), type: o.type, startDate: o.startDate || null, dueDate: o.dueDate || null,
+      title: o.title, clientId: num(o.clientId), type: o.type, status: o.status, startDate: o.startDate || null, dueDate: o.dueDate || null,
+      sessionAt: o.sessionAt ? o.sessionAt.slice(0, 16) : null, folderUrl: o.folderUrl,
       fee: Number(o.fee || 0), revisionsAllowed: Number(o.revisionsAllowed || 0), notes: o.notes,
     };
-    if (!id) { body.depositPct = Number(o.depositPct || 0); if (o.lead) body.status = "lead"; }
+    if (!id) body.depositPct = Number(o.depositPct || 0);
     const j = await mutate(id ? "PATCH" : "POST", id ? `/projects/${id}` : "/projects", body, t(id ? "saved" : "project_created"));
     if (j) { closeModal(); if (!id) go(`project/${j.id}`); }
   },
@@ -1139,6 +1303,10 @@ document.addEventListener("input", e => {
 });
 document.addEventListener("change", e => {
   if (e.target.id === "mMethod") { S.money.method = e.target.value; render(); }
+  if (e.target.dataset.stage) {
+    const v = e.target.value;
+    mutate("PATCH", `/projects/${e.target.dataset.stage}`, { status: v }, t("status_set", { s: t("st_" + v) }));
+  }
   if (e.target.id === "importFile") readImport(e.target);
 });
 document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#overlay").hidden) closeModal(); });
@@ -1164,12 +1332,23 @@ function go(h) {
   if (location.hash.slice(1) === h) { S.route = parseHash(); render(); }
   else location.hash = h;
 }
+/* One-off routes: the Google sign-in comes back to #settings/google-ok or google-error; #settings/calendar jumps to the panel. */
+function routeEffects() {
+  const r = S.route;
+  if (r.name !== "settings" || !r.raw || !S.data) return;
+  if (r.raw === "google-ok") toast(t("gcal_connected_toast"));
+  if (r.raw === "google-error") toast(t("gcal_connect_failed"));
+  if (r.raw === "google-ok" || r.raw === "google-error") history.replaceState(null, "", "#settings");
+  requestAnimationFrame(() => $("#calendar-settings")?.scrollIntoView({ block: "start" }));
+}
 window.addEventListener("hashchange", () => {
   S.route = parseHash();
   if (S.route.name !== "invoice") S.invLang = null;
   closeModal();
   render();
   window.scrollTo(0, 0);
+  routeEffects();
+  if (S.editAfterRoute) { const id = S.editAfterRoute; S.editAfterRoute = null; projectForm(id); }
 });
 window.addEventListener("online", () => { if (S.offline) location.reload(); });
 matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", renderChrome);
@@ -1188,6 +1367,9 @@ async function boot() {
     if (cached) { S.data = JSON.parse(cached); S.offline = true; S.lang = S.data.me.lang; applyLang(); }
   }
   render();
+  routeEffects();
+  // Remember the browser's time zone so session times land correctly in calendars.
+  if (S.data && !S.offline && !S.data.me.tz) api("PATCH", "/me", { tz: Intl.DateTimeFormat().resolvedOptions().timeZone }).catch(() => {});
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
 }
 boot();

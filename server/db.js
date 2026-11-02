@@ -1,0 +1,115 @@
+import { DatabaseSync } from "node:sqlite";
+import fs from "node:fs";
+import path from "node:path";
+
+const SCHEMA = `
+CREATE TABLE IF NOT EXISTS users(
+  id INTEGER PRIMARY KEY,
+  email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  pass_hash TEXT NOT NULL,
+  name TEXT NOT NULL,
+  business TEXT NOT NULL DEFAULT '',
+  phone TEXT NOT NULL DEFAULT '',
+  lang TEXT NOT NULL DEFAULT 'ar',
+  currency TEXT NOT NULL DEFAULT 'EGP',
+  instapay TEXT NOT NULL DEFAULT '',
+  vcash TEXT NOT NULL DEFAULT '',
+  deposit_pct INTEGER NOT NULL DEFAULT 50,
+  revisions INTEGER NOT NULL DEFAULT 3,
+  templates TEXT NOT NULL DEFAULT '{}',
+  next_code INTEGER NOT NULL DEFAULT 1001,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sessions(
+  token_hash TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  expires_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS clients(
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  phone TEXT NOT NULL DEFAULT '',
+  email TEXT NOT NULL DEFAULT '',
+  company TEXT NOT NULL DEFAULT '',
+  lang TEXT NOT NULL DEFAULT 'ar',
+  notes TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS projects(
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  client_id INTEGER REFERENCES clients(id),
+  code TEXT NOT NULL,
+  title TEXT NOT NULL,
+  type TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active',
+  start_date TEXT,
+  due_date TEXT,
+  fee REAL NOT NULL DEFAULT 0,
+  revisions_allowed INTEGER NOT NULL DEFAULT 3,
+  revisions_used INTEGER NOT NULL DEFAULT 0,
+  links TEXT NOT NULL DEFAULT '[]',
+  notes TEXT NOT NULL DEFAULT '',
+  status_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS deliverables(
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  label TEXT NOT NULL,
+  due_date TEXT,
+  done INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS payments(
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL DEFAULT 'extra',
+  label TEXT NOT NULL DEFAULT '',
+  amount REAL NOT NULL,
+  due_date TEXT,
+  paid_at TEXT,
+  method TEXT NOT NULL DEFAULT '',
+  ref TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS activity(
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  at TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  data TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS clients_user ON clients(user_id);
+CREATE INDEX IF NOT EXISTS projects_user ON projects(user_id);
+CREATE INDEX IF NOT EXISTS deliverables_user ON deliverables(user_id);
+CREATE INDEX IF NOT EXISTS payments_user ON payments(user_id);
+CREATE INDEX IF NOT EXISTS activity_user ON activity(user_id, at);
+CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
+`;
+
+export function openDb(file) {
+  if (file !== ":memory:") fs.mkdirSync(path.dirname(file), { recursive: true });
+  const db = new DatabaseSync(file);
+  db.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;");
+  db.exec(SCHEMA);
+  return db;
+}
+
+export function tx(db, fn) {
+  db.exec("BEGIN");
+  try {
+    const out = fn();
+    db.exec("COMMIT");
+    return out;
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}

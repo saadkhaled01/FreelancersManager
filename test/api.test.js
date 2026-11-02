@@ -344,3 +344,81 @@ test("Google Calendar: connect, sync changes, disconnect", async () => {
   assert.deepEqual(G.revoked, ["rt-1"]);
   assert.equal((await a("GET", "/data")).body.data.me.google.connected, false);
 });
+
+const PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
+test("style: brand settings and logo", async () => {
+  const a = agent();
+  await signup(a, "brand@example.com");
+  const brand = { color: "#2F5D8A", layout: "bold", font: "elegant", address: "Cairo", website: "studio.example", taxId: "123-456", showPay: false, footer: { ar: "شكرًا", en: "Thanks" } };
+  const r = await a("PATCH", "/me", { brand });
+  assert.deepEqual(r.body.data.me.brand, brand);
+  for (const bad of [{ color: "red" }, { layout: "fancy" }, { font: "comic" }, { website: "javascript:alert(1)" }, { footer: { en: "x".repeat(601) } }])
+    assert.equal((await a("PATCH", "/me", { brand: { ...brand, ...bad } })).status, 400, JSON.stringify(bad));
+  assert.equal(r.body.data.me.logoVersion, null);
+  assert.equal((await a("PUT", "/me/logo", { dataUrl: "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=" })).status, 400);
+  assert.equal((await a("PUT", "/me/logo", { dataUrl: "data:image/png;base64,AAAA" })).status, 400, "wrong signature");
+  const up = await a("PUT", "/me/logo", { dataUrl: PNG });
+  assert.match(up.body.data.me.logoVersion, /^[0-9a-f]{10}$/);
+  const img = await a("GET", "/me/logo");
+  assert.equal(img.status, 200);
+  const ex = await a("GET", "/export");
+  assert.equal(ex.body.settings.logo, PNG);
+  assert.equal(ex.body.settings.brand.layout, "bold");
+  await a("DELETE", "/me/logo");
+  assert.equal((await a("GET", "/me/logo")).status, 404);
+});
+
+test("shared document link: public view, logo, revoke", async () => {
+  const a = agent();
+  await signup(a, "share@example.com", { lang: "en" });
+  await a("PATCH", "/me", { business: "Lens & Co", brand: { color: "#B23A2E", layout: "minimal", font: "modern" } });
+  await a("PUT", "/me/logo", { dataUrl: PNG });
+  const c = await a("POST", "/clients", { name: "Mona Adel", phone: "01011112222", email: "mona@example.com", lang: "ar" });
+  const p = await a("POST", "/projects", { title: "Wedding film", clientId: c.body.id, fee: 9000, status: "active" });
+  const s = await a("POST", `/projects/${p.body.id}/share`, {});
+  const token = s.body.data.projects.find(x => x.id === p.body.id).shareToken;
+  assert.ok(token.length >= 20);
+  assert.equal((await a("POST", `/projects/${p.body.id}/share`, {})).body.data.projects.find(x => x.id === p.body.id).shareToken, token, "stable");
+  const pub = await fetch(`${base}/api/public/doc/${token}`);
+  assert.equal(pub.status, 200);
+  const d = await pub.json();
+  assert.equal(d.kind, "invoice");
+  assert.equal(d.lang, "ar");
+  assert.equal(d.fee, 9000);
+  assert.equal(d.owed, 9000);
+  assert.equal(d.from.business, "Lens & Co");
+  assert.equal(d.brand.layout, "minimal");
+  assert.equal(d.client.email, undefined, "client email is not exposed");
+  assert.equal(d.hasLogo, true);
+  assert.equal((await fetch(`${base}/api/public/doc/${token}/logo`)).headers.get("content-type"), "image/png");
+  const page = await fetch(`${base}/d/${token}`);
+  assert.match(await page.text(), /doc-page\.js/);
+  // Other users can't share someone else's project.
+  assert.equal((await agent()("POST", `/projects/${p.body.id}/share`, {})).status, 401);
+  await a("DELETE", `/projects/${p.body.id}/share`);
+  assert.equal((await fetch(`${base}/api/public/doc/${token}`)).status, 404);
+});
+
+test("email a document with branding", async () => {
+  const a = agent();
+  await signup(a, "mailer@example.com", { lang: "ar" });
+  await a("PATCH", "/me", { business: "استوديو نور", brand: { color: "#6B4E9B" } });
+  const c = await a("POST", "/clients", { name: "Omar Said", lang: "en" });
+  const p = await a("POST", "/projects", { title: "Menu photos", clientId: c.body.id, fee: 3000 });
+  outbox.length = 0;
+  assert.equal((await a("POST", `/projects/${p.body.id}/email`, { to: "not-an-email", lang: "en" })).status, 400);
+  const r = await a("POST", `/projects/${p.body.id}/email`, { to: "omar@example.com", lang: "en", message: "Here's the quote we discussed." });
+  assert.equal(r.status, 200);
+  assert.equal(outbox.length, 1);
+  const m = outbox[0];
+  assert.equal(m.to, "omar@example.com");
+  assert.equal(m.replyTo, "mailer@example.com");
+  assert.match(m.subject, /^Quote FM-\d{4}-001 from استوديو نور$/);
+  assert.ok(m.html.includes("#6B4E9B"));
+  const link = m.text.match(/https:\/\/fm\.example\/d\/([\w-]+)\?lang=en/);
+  assert.ok(link, m.text);
+  assert.equal((await fetch(`${base}/api/public/doc/${link[1]}`)).status, 200);
+  const act = r.body.data.activity.find(x => x.kind === "sent");
+  assert.equal(act.data.via, "email");
+});

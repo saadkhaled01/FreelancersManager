@@ -123,6 +123,10 @@ const MIGRATIONS = [
     hash TEXT NOT NULL,
     PRIMARY KEY(user_id, uid)
   )`,
+  "ALTER TABLE users ADD COLUMN brand TEXT NOT NULL DEFAULT '{}'",
+  "ALTER TABLE users ADD COLUMN logo TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE projects ADD COLUMN share_token TEXT",
+  "CREATE UNIQUE INDEX IF NOT EXISTS projects_share_token ON projects(share_token)",
 ];
 
 export function openDb(file) {

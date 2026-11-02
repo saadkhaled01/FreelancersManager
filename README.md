@@ -9,7 +9,8 @@ Projects, clients and payments for freelancers, in Arabic and English. It's a sm
 - **Payments**: deposit and balance are created from the fee; overdue payments are flagged automatically.
 - **WhatsApp**: ready-made quote, delivery, reminder and thank-you messages, sent in each client's language and editable in Settings.
 - **Money**: received vs expected per month, a 6-month chart, and every payment filtered by status and method.
-- **Invoices and quotes**: in Arabic or English, ready to print or save as PDF.
+- **Your style**: logo, brand colour, one of three layouts (Classic, Bold header, Minimal), font pairing (Modern, Clean, Elegant), business details, and a footer note per language, with a live preview.
+- **Branded quotes and invoices**: in Arabic or English, ready to print or save as PDF. **Send** shares a private link (`/d/<token>`) by WhatsApp, by email, or copied. The client sees the document in your branding on any phone, can switch language and save a PDF, and always sees the latest payments. You can stop sharing at any time. With email set up, the server sends a branded email from `MAIL_FROM` with replies going to you; otherwise Send opens your mail app.
 - **Accounts**: anyone can sign up. Every user's data is private to them. Password reset by email. Backup and restore as JSON.
 - Typography: Alexandria for headings and Readex Pro for text, both drawn for Arabic and Latin together, with IBM Plex Mono for figures. The fonts ship in `app/fonts` (OFL licensed), so nothing loads from Google Fonts and they work offline.
 - Installable as an app (PWA). With no connection it shows your last loaded data read-only.
@@ -32,7 +33,7 @@ Data is stored in SQLite at `$DATA_DIR/freelancers.db` (default `./data`).
 | `COOKIE_SECURE` | unset | Set to `1` to force `Secure` cookies. They are already secure when the proxy sends `X-Forwarded-Proto: https`. |
 | `TRUST_PROXY` | unset | Set to `1` behind a proxy (Railway) so rate limits see each visitor's real IP instead of the proxy's. Don't set it without a proxy, or visitors can fake their IP. |
 | `APP_URL` | unset | Public address, e.g. `https://freelancers.example.com`. Reset links are built from it. Required for sending reset emails. |
-| `RESEND_API_KEY` | unset | [Resend](https://resend.com) API key for password reset emails. |
+| `RESEND_API_KEY` | unset | [Resend](https://resend.com) API key for password reset and document emails. |
 | `MAIL_FROM` | unset | Sender, e.g. `Freelancers Manager <noreply@yourdomain.com>`. The domain must be verified in Resend. |
 
 | `GOOGLE_CLIENT_ID` | unset | OAuth client for Google Calendar sync (see below). |

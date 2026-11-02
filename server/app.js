@@ -9,7 +9,8 @@ import {
 } from "./model.js";
 import { createGoogle } from "./google.js";
 import { seedExamples } from "./seed.js";
-import { createMailer, resetEmail } from "./mail.js";
+import { createMailer, resetEmail, docEmail } from "./mail.js";
+import { docData } from "../app/doc-data.js";
 import { buildIcs } from "./ics.js";
 import crypto from "node:crypto";
 
@@ -33,7 +34,27 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
   const snap = userId => {
     const d = snapshot(db, userId);
     d.me.google = google.status(userId);
+    d.me.mailReady = mailer.configured && !!appUrl;
     return d;
+  };
+
+  /* Quote / invoice for one project, built with the same code the app uses for its preview. */
+  function buildDoc(userId, projectId) {
+    const d = snapshot(db, userId);
+    const project = d.projects.find(p => p.id === projectId);
+    return docData({
+      project, me: d.me, today: today(),
+      client: d.clients.find(c => c.id === project.clientId) || null,
+      payments: d.payments.filter(x => x.projectId === project.id),
+      deliverables: d.deliverables.filter(x => x.projectId === project.id),
+    });
+  }
+  const shareToken = (userId, projectId) => {
+    const p = owned(db, "projects", userId, projectId);
+    if (p.share_token) return p.share_token;
+    const token = crypto.randomBytes(18).toString("base64url");
+    db.prepare("UPDATE projects SET share_token = ? WHERE id = ?").run(token, p.id);
+    return token;
   };
   const limits = {
     login: new auth.Limiter(10, 15 * 60e3),      // failed logins per IP + email
@@ -41,6 +62,7 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
     forgotIp: new auth.Limiter(10, 3600e3),      // reset requests per IP
     forgotEmail: new auth.Limiter(3, 3600e3),    // reset emails per address
     reset: new auth.Limiter(20, 3600e3),         // reset attempts per IP
+    docEmail: new auth.Limiter(30, 3600e3),      // document emails per user
   };
   /* Behind a proxy (Railway), the client is the last address the proxy appended. Only trusted when TRUST_PROXY is on. */
   const clientIp = req => {
@@ -77,6 +99,7 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
     const token = cookies(req)[auth.COOKIE];
 
     // Public routes
+    if (parts[0] === "public" && parts[1] === "doc" && method === "GET") return publicDoc(res, parts[2], parts[3]);
     if (method === "POST" && parts[0] === "signup") return signup(req, res, body, secure);
     if (method === "POST" && parts[0] === "forgot") return forgot(req, res, body, secure);
     if (method === "POST" && parts[0] === "reset") return reset(req, res, body, secure);
@@ -111,6 +134,20 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
         update(db, "users", userId, validate(ME_SPEC, body, { partial: true }));
         return reply();
       }
+      if (parts[1] === "logo") {
+        if (method === "GET") {
+          const u = db.prepare("SELECT logo FROM users WHERE id = ?").get(userId);
+          return sendImage(res, u.logo, "private, max-age=86400");
+        }
+        if (method === "PUT") {
+          db.prepare("UPDATE users SET logo = ? WHERE id = ?").run(checkLogo(body.dataUrl), userId);
+          return reply();
+        }
+        if (method === "DELETE") {
+          db.prepare("UPDATE users SET logo = '' WHERE id = ?").run(userId);
+          return reply();
+        }
+      }
       if (parts[1] === "calendar" && (method === "POST" || method === "DELETE")) {
         const token = method === "POST" ? crypto.randomBytes(24).toString("base64url") : null;
         db.prepare("UPDATE users SET cal_token = ? WHERE id = ?").run(token, userId);
@@ -132,7 +169,8 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
 
     if (parts[0] === "export" && method === "GET") {
       const d = snapshot(db, userId);
-      const { email, id, ...settings } = d.me;
+      const { email, id, calToken, logoVersion, ...settings } = d.me;
+      settings.logo = db.prepare("SELECT logo FROM users WHERE id = ?").get(userId).logo;
       res.setHeader("Content-Disposition", `attachment; filename="freelancers-manager-${today()}.json"`);
       return send(res, 200, {
         app: "freelancers-manager", version: 1, exportedAt: now(), settings,
@@ -152,6 +190,18 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
       return reply();
     }
 
+    if (parts[0] === "projects" && parts[2] === "share") {
+      if (method === "POST") { shareToken(userId, parts[1]); return reply(); }
+      if (method === "DELETE") {
+        const p = owned(db, "projects", userId, parts[1]);
+        db.prepare("UPDATE projects SET share_token = NULL WHERE id = ?").run(p.id);
+        return reply();
+      }
+    }
+    if (parts[0] === "projects" && parts[2] === "email" && method === "POST") {
+      await emailDoc(userId, Number(parts[1]), body);
+      return reply();
+    }
     if (parts[0] === "projects" && parts[2] === "duplicate" && method === "POST") {
       const id = tx(db, () => duplicate(userId, parts[1], body));
       return reply({ id });
@@ -248,6 +298,40 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
     db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
     setCookie(res, auth.createSession(db, userId), auth.SESSION_DAYS * 86400, secure);
     return send(res, 200, { data: snap(userId) });
+  }
+
+  /* ---------- branded documents ---------- */
+  function publicDoc(res, token, sub) {
+    const row = token && token.length < 60 && db.prepare("SELECT id, user_id FROM projects WHERE share_token = ?").get(token);
+    if (!row) throw new HttpError(404, "not_found");
+    res.setHeader("X-Robots-Tag", "noindex");
+    if (sub === "logo") return sendImage(res, db.prepare("SELECT logo FROM users WHERE id = ?").get(row.user_id).logo, "public, max-age=3600");
+    if (sub) throw new HttpError(404, "not_found");
+    const d = buildDoc(row.user_id, row.id);
+    d.hasLogo = !!db.prepare("SELECT logo FROM users WHERE id = ?").get(row.user_id).logo;
+    return send(res, 200, d);
+  }
+
+  async function emailDoc(userId, projectId, body) {
+    if (!mailer.configured || !appUrl) throw new HttpError(400, "mail_unavailable");
+    const to = String(body.to ?? "").trim();
+    if (!EMAIL_RE.test(to) || to.length > 160) throw new HttpError(400, "invalid", { field: "email" });
+    const message = String(body.message ?? "").trim();
+    if (message.length > 2000) throw new HttpError(400, "invalid", { field: "message" });
+    if (limits.docEmail.blocked(String(userId))) throw new HttpError(429, "too_many");
+    limits.docEmail.hit(String(userId));
+    const lang = body.lang === "en" ? "en" : "ar";
+    const token = shareToken(userId, projectId);
+    const d = buildDoc(userId, projectId);
+    const u = db.prepare("SELECT email, logo FROM users WHERE id = ?").get(userId);
+    const base = appUrl.replace(/\/$/, "");
+    const msg = docEmail({
+      lang, doc: d, message, link: `${base}/d/${token}?lang=${lang}`,
+      logoUrl: u.logo ? `${base}/api/public/doc/${token}/logo` : "",
+    });
+    try { await mailer.send({ to, replyTo: u.email, ...msg }); }
+    catch (e) { console.error("Document email failed:", e.message); throw new HttpError(502, "mail_failed"); }
+    log(db, userId, projectId, "sent", { via: "email", to, kind: d.kind });
   }
 
   /* ---------- Google Calendar ---------- */
@@ -394,7 +478,10 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
     tx(db, () => {
       for (const t of ["activity", "payments", "deliverables", "projects", "clients"])
         db.prepare(`DELETE FROM ${t} WHERE user_id = ?`).run(userId);
-      if (body.settings) update(db, "users", userId, validate(ME_SPEC, body.settings, { partial: true }));
+      if (body.settings) {
+        update(db, "users", userId, validate(ME_SPEC, body.settings, { partial: true }));
+        if (body.settings.logo) db.prepare("UPDATE users SET logo = ? WHERE id = ?").run(checkLogo(body.settings.logo), userId);
+      }
       const t = now();
       const clientIds = new Map(), projectIds = new Map();
       for (const c of list("clients")) {
@@ -435,6 +522,24 @@ function send(res, status, obj) {
   const body = JSON.stringify(obj);
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
   res.end(body);
+}
+
+/* Logos: PNG, JPEG or WebP only (no SVG, which can carry script), up to about 400 KB, checked by their file signature. */
+function checkLogo(dataUrl) {
+  const m = /^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/]+={0,2})$/.exec(String(dataUrl ?? ""));
+  if (!m || dataUrl.length > 560_000) throw new HttpError(400, "invalid", { field: "logo" });
+  const b = Buffer.from(m[2], "base64");
+  const ok = { png: b[0] === 0x89 && b.toString("latin1", 1, 4) === "PNG", jpeg: b[0] === 0xff && b[1] === 0xd8, webp: b.toString("latin1", 0, 4) === "RIFF" && b.toString("latin1", 8, 12) === "WEBP" }[m[1]];
+  if (!ok) throw new HttpError(400, "invalid", { field: "logo" });
+  return dataUrl;
+}
+
+function sendImage(res, dataUrl, cache) {
+  const m = /^data:(image\/(?:png|jpeg|webp));base64,(.+)$/.exec(dataUrl || "");
+  if (!m) { res.writeHead(404, { "Content-Type": "text/plain" }); return res.end("Not found"); }
+  const buf = Buffer.from(m[2], "base64");
+  res.writeHead(200, { "Content-Type": m[1], "Content-Length": buf.length, "Cache-Control": cache, "Content-Security-Policy": "default-src 'none'" });
+  res.end(buf);
 }
 
 function redirect(res, location) {
@@ -489,7 +594,8 @@ function readJson(req) {
 function serveStatic(req, res, pathname) {
   if (req.method !== "GET" && req.method !== "HEAD") { res.writeHead(405); return res.end(); }
   let rel = decodeURIComponent(pathname);
-  if (rel === "/" || !path.extname(rel)) rel = "/index.html";
+  if (rel.startsWith("/d/")) rel = "/doc.html";
+  else if (rel === "/" || !path.extname(rel)) rel = "/index.html";
   const file = path.resolve(APP_DIR, "." + path.posix.normalize(rel));
   if (!file.startsWith(APP_DIR + path.sep) || !fs.existsSync(file) || !fs.statSync(file).isFile()) {
     res.writeHead(404, { "Content-Type": "text/plain" });

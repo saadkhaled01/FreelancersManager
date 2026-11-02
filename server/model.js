@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 /* Pipeline, after Sorah Ops: brief → booked → in production → client review ⇄ revisions → delivered → done. */
 export const STATUSES = ["lead", "booked", "active", "with_client", "revising", "delivered", "archived"];
 export const OPEN = ["lead", "booked", "active", "with_client", "revising"];
@@ -5,7 +6,9 @@ export const METHODS = ["", "instapay", "vcash", "cash", "bank", "other"];
 export const PAY_KINDS = ["deposit", "balance", "extra"];
 export const CURRENCIES = ["EGP", "USD", "EUR", "SAR", "AED", "KWD", "QAR", "GBP"];
 export const LANGS = ["ar", "en"];
-export const TEMPLATE_KINDS = ["quote", "delivery", "reminder", "thanks"];
+export { LAYOUTS, FONTS } from "../app/doc-data.js";
+import { LAYOUTS, FONTS } from "../app/doc-data.js";
+export const TEMPLATE_KINDS = ["quote", "delivery", "reminder", "thanks", "document"];
 
 export class HttpError extends Error {
   constructor(status, error, extra = {}) {
@@ -70,6 +73,7 @@ export const ME_SPEC = {
   revisions: { col: "revisions", type: "int", min: 0, max: 50 },
   templates: { col: "templates", type: "templates" },
   tz: { col: "tz", type: "tz" },
+  brand: { col: "brand", type: "brand" },
 };
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -135,6 +139,18 @@ function coerce(spec, key, v) {
       if (typeof v !== "string" || v.length > 64) throw bad(key);
       try { new Intl.DateTimeFormat("en", { timeZone: v }); } catch { throw bad(key); }
       return v;
+    case "brand": {
+      if (!v || typeof v !== "object" || Array.isArray(v)) throw bad(key);
+      const str = (s, max) => { if (s == null) return ""; if (typeof s !== "string" || s.trim().length > max) throw bad(key); return s.trim(); };
+      const out = {
+        color: v.color ?? "#1E6F5C", layout: v.layout ?? "classic", font: v.font ?? "modern",
+        address: str(v.address, 200), website: str(v.website, 200), taxId: str(v.taxId, 60), showPay: v.showPay !== false, footer: {},
+      };
+      if (!/^#[0-9a-f]{6}$/i.test(out.color) || !LAYOUTS.includes(out.layout) || !FONTS.includes(out.font)) throw bad(key);
+      if (out.website && !/^(https?:\/\/)?[^\s<>"]+\.[^\s<>"]+$/i.test(out.website)) throw bad(key);
+      for (const l of LANGS) { const s = str(v.footer?.[l], 600); if (s) out.footer[l] = s; }
+      return JSON.stringify(out);
+    }
     case "templates": {
       if (!v || typeof v !== "object" || Array.isArray(v)) throw bad(key);
       const out = {};
@@ -194,6 +210,8 @@ export function publicMe(u) {
     lang: u.lang, currency: u.currency, instapay: u.instapay, vcash: u.vcash,
     depositPct: u.deposit_pct, revisions: u.revisions, templates: JSON.parse(u.templates || "{}"),
     calToken: u.cal_token || null, tz: u.tz || "",
+    brand: JSON.parse(u.brand || "{}"),
+    logoVersion: u.logo ? crypto.createHash("sha1").update(u.logo).digest("hex").slice(0, 10) : null,
   };
 }
 

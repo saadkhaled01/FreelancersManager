@@ -1,4 +1,6 @@
 import { STR, TEMPLATES, TYPES } from "./i18n.js";
+import { docData, sampleDoc, normalizeBrand, BRAND_COLORS, LAYOUTS, FONTS } from "./doc-data.js";
+import { renderDoc } from "./doc-render.js";
 
 /* ============ utilities ============ */
 const $ = s => document.querySelector(s);
@@ -155,7 +157,7 @@ const waLink = (phone, text) => `https://wa.me/${waNumber(phone)}${text ? "?text
 
 function fillTemplate(kind, p, extra = {}) {
   const c = clientOf(p);
-  const lang = c?.lang || S.lang;
+  const lang = extra.lang || c?.lang || S.lang;
   const me = D().me;
   const tpl = me.templates?.[kind]?.[lang] || TEMPLATES[lang][kind];
   const unpaid = unpaidOf(p);
@@ -168,6 +170,8 @@ function fillTemplate(kind, p, extra = {}) {
     amount: money(extra.amount ?? (overdue.length ? sum(overdue) : unpaid[0]?.amount ?? projMoney(p).owed), lang),
     link, due: p.dueDate ? fdateLong(p.dueDate, lang) : "",
     instapay: me.instapay, vcash: me.vcash, me: me.business || me.name,
+    doc: tl(lang, p.status === "lead" ? "quote" : "invoice"),
+    total: money(p.status === "lead" ? p.fee : projMoney(p).owed, lang),
   };
   return tpl.split("\n").filter(line => {
     const keys = [...line.matchAll(/\{(\w+)\}/g)].map(m => m[1]);
@@ -255,7 +259,7 @@ const isDark = () => {
 function renderChrome() {
   const authed = !!S.data;
   document.body.classList.toggle("authed", authed);
-  const cur = { project: "projects", client: "clients", invoice: "projects", calendar: "today" }[S.route.name] || S.route.name;
+  const cur = { project: "projects", client: "clients", invoice: "projects", calendar: "today", style: "settings" }[S.route.name] || S.route.name;
   const links = NAV.map(n => `<a href="#${n}" ${cur === n ? `aria-current="page"` : ""}>${I[n]}<span>${t("nav_" + n)}</span></a>`).join("");
   $("#topbar").innerHTML = `
     <a class="brand" href="#today"><div class="mark">${t("brand_mark")}</div><div><b>${t("brand")}</b><span>${t("tagline")}</span></div></a>
@@ -282,10 +286,10 @@ function render() {
     return;
   }
   const r = S.route;
-  const views = { today: todayView, projects: projectsView, project: projectView, clients: clientsView, client: clientView, money: moneyView, settings: settingsView, invoice: invoiceView, calendar: calendarView };
+  const views = { today: todayView, projects: projectsView, project: projectView, clients: clientsView, client: clientView, money: moneyView, settings: settingsView, invoice: invoiceView, calendar: calendarView, style: styleView };
   const fn = views[r.name] || todayView;
   v.innerHTML = (S.offline ? `<div class="banner warn"><span><b>${t("offline")}</b> ${t("offline_hint")}</span></div>` : "") + fn(r.id);
-  document.title = `${r.name === "calendar" ? t("calendar") : t("nav_" + (NAV.includes(r.name) ? r.name : r.name === "client" ? "clients" : "projects"))} · ${t("brand")}`;
+  document.title = `${r.name === "calendar" ? t("calendar") : r.name === "style" ? t("style_title") : t("nav_" + (NAV.includes(r.name) ? r.name : r.name === "client" ? "clients" : "projects"))} · ${t("brand")}`;
 }
 
 /* ============ small components ============ */
@@ -523,6 +527,7 @@ function projectView(id) {
   if (["active", "revising"].includes(p.status)) quick.push(`<button class="btn btn-primary" data-act="sendVersion" data-id="${p.id}">${t("send_version")}</button>`);
   if (p.status === "with_client") quick.push(`<button class="btn btn-ghost" data-act="status" data-id="${p.id}" data-v="revising">${t("wants_changes")}</button>`);
   if (["active", "with_client", "revising"].includes(p.status)) quick.push(`<button class="btn btn-ghost" data-act="status" data-id="${p.id}" data-v="delivered">${t("mark_delivered")}</button>`);
+  quick.push(`<button class="btn btn-ghost" data-act="sendDoc" data-id="${p.id}">${t(p.status === "lead" ? "send_quote" : "send_invoice")}</button>`);
   const gc = gcalLink(p);
   if (gc) quick.push(`<a class="btn btn-ghost" href="${esc(gc)}" target="_blank" rel="noopener">${t("open_gcal")} ↗</a>`);
   if (p.folderUrl) quick.push(`<a class="btn btn-ghost" href="${esc(p.folderUrl)}" target="_blank" rel="noopener">${t("open_folder")} ↗</a>`);
@@ -612,6 +617,7 @@ function activityText(a) {
     case "paid": return t("a_paid", { amt: money(d.amount || 0) }) + (d.method ? ` · ${t("m_" + d.method)}` : "");
     case "done": return t("a_done", { label: esc(d.label) });
     case "note": return esc(d.text);
+    case "sent": return t("a_sent", { kind: t(d.kind || "invoice"), to: esc(d.to || "") });
     default: return esc(a.kind);
   }
 }
@@ -788,6 +794,8 @@ function settingsView() {
   return `<div class="toolbar"><h1>${t("nav_settings")}</h1></div>
     <div class="split">
       <div class="stack">
+        <section class="panel style-card"><div><h2 style="font-size:16px">${t("style_title")}</h2><span class="hint">${t("style_card_hint")}</span></div>
+          <a class="btn btn-primary" href="#style">${t("customize")}</a></section>
         <section class="panel"><h2 style="font-size:16px">${t("profile")}</h2>
           <form data-form="profile">
             <div class="grid2"><div class="field req"><label for="sName">${t("f_name")}</label><input id="sName" name="name" required maxlength="120" value="${esc(me.name)}"></div>
@@ -799,7 +807,7 @@ function settingsView() {
             <div><button class="btn btn-primary" type="submit">${t("save")}</button></div>
           </form></section>
         <section class="panel"><h2 style="font-size:16px">${t("templates")}</h2>
-          <div class="chips">${["quote", "delivery", "reminder", "thanks"].map(x => `<button class="chip" data-act="tplKind" data-v="${x}" aria-pressed="${k === x}">${t("tk_" + x)}</button>`).join("")}</div>
+          <div class="chips">${["quote", "delivery", "reminder", "thanks", "document"].map(x => `<button class="chip" data-act="tplKind" data-v="${x}" aria-pressed="${k === x}">${t("tk_" + x)}</button>`).join("")}</div>
           <form data-form="templates" data-kind="${k}">
             <div class="grid2">${tplField("ar")}${tplField("en")}</div>
             <span class="hint">${t("tpl_hint")}</span>
@@ -865,43 +873,127 @@ function calendarPanel() {
 }
 
 /* ============ invoice / quote ============ */
+/* ============ branded documents ============ */
+const docFor = p => docData({ project: p, client: clientOf(p), payments: paysOf(p.id), deliverables: delsOf(p.id), me: D().me, today: today() });
+const logoUrl = () => (D().me.logoVersion ? `/api/me/logo?v=${D().me.logoVersion}` : "");
+const shareUrl = (p, lang) => `${location.origin}/d/${p.shareToken}?lang=${lang}`;
+const langSeg = (act, cur, extra = "") => `<div class="seg">${["ar", "en"].map(l => `<button type="button" data-act="${act}" data-v="${l}" ${extra} aria-pressed="${cur === l}">${l === "ar" ? "العربية" : "English"}</button>`).join("")}</div>`;
+
 function invoiceView(id) {
   const p = P(id);
   if (!p) return empty(t("not_found"), t("not_found_hint"));
-  const c = clientOf(p), me = D().me, m = projMoney(p), pays = paysOf(p.id);
-  const L = S.invLang || c?.lang || S.lang;
-  const x = (k, v) => tl(L, k, v);
-  const isQuote = p.status === "lead";
+  const d = docFor(p), L = S.invLang || d.lang;
   return `<div class="toolbar noprint"><a class="back" href="#project/${p.id}">${I.back}${esc(p.title)}</a>
-      <div class="acts"><div class="seg"><button type="button" data-act="invLang" data-v="ar" aria-pressed="${L === "ar"}">العربية</button><button type="button" data-act="invLang" data-v="en" aria-pressed="${L === "en"}">English</button></div>
-        ${waBtn(p.id, isQuote ? "quote" : "reminder")}<button class="btn btn-primary btn-sm" data-act="print">${t("print")}</button></div></div>
-    <article class="doc" dir="${L === "ar" ? "rtl" : "ltr"}" lang="${L}">
-      <div class="dh">
-        <div><h1>${esc(me.business || me.name)}</h1>${me.business ? `<div class="hint">${esc(me.name)}</div>` : ""}<div class="hint ltr">${esc(me.email)}${me.phone ? " · " + esc(me.phone) : ""}</div></div>
-        <div><div class="kind">${x(isQuote ? "quote" : "invoice")}</div><div class="hint mono" style="text-align:end">${esc(p.code)} · ${fdateLong(today(), L)}</div></div>
+      <div class="acts">${langSeg("invLang", L)}
+        <a class="btn btn-ghost btn-sm" href="#style">${t("edit_style")}</a>
+        <button class="btn btn-ghost btn-sm" data-act="print">${t("print")}</button>
+        <button class="btn btn-primary btn-sm" data-act="sendDoc" data-id="${p.id}">${t(d.kind === "quote" ? "send_quote" : "send_invoice")}</button></div></div>
+    ${p.shareToken ? `<div class="banner ok noprint"><span>${t("doc_shared")}</span><a class="btn btn-ghost btn-sm" href="${esc(shareUrl(p, L))}" target="_blank" rel="noopener">${t("preview_link")} ↗</a></div>` : ""}
+    ${renderDoc(d, { tl, lang: L, logoUrl: logoUrl() })}`;
+}
+
+async function sendDocModal(pid) {
+  if (!P(pid).shareToken && !await mutate("POST", `/projects/${pid}/share`, {})) return;
+  const p = P(pid), c = clientOf(p), d = docFor(p), me = D().me;
+  const L = S.invLang || d.lang, link = shareUrl(p, L);
+  const subject = `${tl(L, d.kind)} ${p.code} · ${me.business || me.name}`;
+  const mailBody = fillTemplate("document", p, { link, lang: L });
+  openModal(`${mhead(t(d.kind === "quote" ? "send_quote" : "send_invoice"))}
+    <div class="field"><span class="lbl">${t("doc_lang")}</span>${langSeg("sendLang", L, `data-id="${p.id}"`)}</div>
+    <div class="field"><label for="shareUrl">${t("doc_link")}</label>
+      <div class="addrow" style="flex-direction:row"><input class="input mono ltr" id="shareUrl" readonly value="${esc(link)}"><button type="button" class="btn btn-ghost" data-act="copyShare">${t("copy")}</button></div>
+      <span class="hint">${t("doc_link_hint")} <button type="button" class="linkish" data-act="unshare" data-id="${p.id}">${t("stop_sharing")}</button></span></div>
+    <div class="sendgrid">
+      <button type="button" class="btn btn-wa" data-act="msg" data-id="${p.id}" data-kind="document" data-link="${esc(link)}" data-lang="${L}">${I.wa}${t("send_wa")}</button>
+      ${me.mailReady
+        ? `<button type="button" class="btn btn-ghost" data-act="emailDoc" data-id="${p.id}">${t("send_email")}</button>`
+        : `<a class="btn btn-ghost" href="mailto:${encodeURIComponent(c?.email || "")}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(mailBody)}">${t("send_email")}</a>`}
+      <a class="btn btn-ghost" href="${esc(link)}" target="_blank" rel="noopener">${t("preview_link")} ↗</a>
+    </div>`);
+}
+
+function emailDocForm(pid) {
+  const p = P(pid), c = clientOf(p), d = docFor(p), L = S.invLang || d.lang;
+  openModal(`${mhead(t("send_email"))}
+    <form data-form="emailDoc" data-id="${p.id}" data-lang="${L}">
+      <div class="field req"><label for="eTo">${t("email_to")}</label><input id="eTo" name="to" type="email" required class="ltr" value="${esc(c?.email)}"></div>
+      <div class="field"><label for="eNote">${t("email_note")}</label><textarea id="eNote" name="message" maxlength="2000" dir="${L === "ar" ? "rtl" : "ltr"}" placeholder="${esc(tl(L, "email_note_ph"))}"></textarea></div>
+      <span class="hint">${t("email_hint", { kind: tl(L, d.kind), lang: L === "ar" ? "العربية" : "English" })}</span>
+      ${mfoot(t("send"))}
+    </form>`);
+}
+
+/* ============ your style ============ */
+function brandFromForm(o) {
+  return {
+    color: o.color, layout: o.layout, font: o.font, address: o.address, website: o.website, taxId: o.taxId,
+    showPay: !!o.showPay, footer: { ar: o.footer_ar || "", en: o.footer_en || "" },
+  };
+}
+function stylePreviewHtml() {
+  const form = $("#styleForm"), L = S.styleLang || S.lang;
+  const me = { ...D().me };
+  if (form) { const o = formObj(form); me.brand = brandFromForm(o); me.business = o.business; }
+  const p = D().projects.filter(x => x.status !== "archived" && x.fee > 0).sort(byPriority)[0];
+  const d = p ? docData({ project: p, client: clientOf(p), payments: paysOf(p.id), deliverables: delsOf(p.id), me, today: today() }) : sampleDoc(me, L, today());
+  return renderDoc(d, { tl, lang: L, logoUrl: logoUrl() });
+}
+function styleView() {
+  const me = D().me, b = normalizeBrand(me.brand), lv = me.logoVersion;
+  const FONT_FACE = { modern: "Alexandria", clean: "Readex Pro", elegant: "El Messiri" };
+  const ta = (l, v) => `<div class="field"><label for="bf_${l}">${l === "ar" ? "العربية" : "English"}</label><textarea id="bf_${l}" name="footer_${l}" dir="${l === "ar" ? "rtl" : "ltr"}" maxlength="600" rows="3" placeholder="${esc(tl(l, "footer_ph"))}">${esc(v)}</textarea></div>`;
+  return `<a class="back" href="#settings">${I.back}${t("nav_settings")}</a>
+    <div class="toolbar"><div><h1>${t("style_title")}</h1><span class="hint">${t("style_hint")}</span></div></div>
+    <div class="style-layout">
+      <form data-form="style" class="panel" id="styleForm">
+        <div class="field"><span class="lbl">${t("logo")}</span>
+          <div class="logo-row"><div class="logo-box">${lv ? `<img src="${logoUrl()}" alt="${t("logo")}">` : `<span>${t("no_logo")}</span>`}</div>
+            <div class="acts"><label class="btn btn-ghost btn-sm" for="logoFile">${lv ? t("change_logo") : t("upload_logo")}</label>
+              <input type="file" id="logoFile" accept="image/png,image/jpeg,image/webp" hidden>
+              ${lv ? `<button type="button" class="btn btn-danger btn-sm" data-act="logoRemove">${t("remove")}</button>` : ""}</div></div>
+          <span class="hint">${t("logo_hint")}</span></div>
+        <div class="field"><span class="lbl">${t("brand_color")}</span>
+          <div class="swatches">${BRAND_COLORS.map(c => `<button type="button" class="swatch" data-act="pickColor" data-v="${c}" style="--c:${c}" aria-label="${c}" aria-pressed="${b.color.toLowerCase() === c.toLowerCase()}"></button>`).join("")}
+            <label class="swatch custom" title="${t("custom_color")}"><input type="color" id="bColor" name="color" value="${b.color}" aria-label="${t("custom_color")}"></label></div></div>
+        <div class="field"><span class="lbl">${t("layout")}</span>
+          <div class="seg">${LAYOUTS.map(l => `<button type="button" data-act="segPick" data-target="bLayout" data-v="${l}" aria-pressed="${b.layout === l}">${t("layout_" + l)}</button>`).join("")}</div>
+          <input type="hidden" id="bLayout" name="layout" value="${b.layout}"></div>
+        <div class="field"><span class="lbl">${t("font")}</span>
+          <div class="seg">${FONTS.map(f => `<button type="button" data-act="segPick" data-target="bFont" data-v="${f}" aria-pressed="${b.font === f}" style="font-family:'${FONT_FACE[f]}'">${t("font_" + f)}</button>`).join("")}</div>
+          <input type="hidden" id="bFont" name="font" value="${b.font}"></div>
+        <div class="grid2">
+          <div class="field"><label for="bBiz">${t("f_business")}</label><input id="bBiz" name="business" maxlength="120" value="${esc(me.business)}" placeholder="${esc(me.name)}"></div>
+          <div class="field"><label for="bWeb">${t("f_website")}</label><input id="bWeb" name="website" class="ltr" maxlength="200" value="${esc(b.website)}" placeholder="studio.com"></div>
+        </div>
+        <div class="grid2">
+          <div class="field"><label for="bAddr">${t("f_address")}</label><input id="bAddr" name="address" maxlength="200" value="${esc(b.address)}"></div>
+          <div class="field"><label for="bTax">${t("f_taxId")}</label><input id="bTax" name="taxId" class="ltr" maxlength="60" value="${esc(b.taxId)}"></div>
+        </div>
+        <label class="check"><input type="checkbox" name="showPay" ${b.showPay ? "checked" : ""}><span>${t("show_pay")}</span></label>
+        <div class="field"><span class="lbl">${t("footer_note")}</span><div class="grid2">${ta("ar", b.footer.ar)}${ta("en", b.footer.en)}</div></div>
+        <div class="acts"><button type="submit" class="btn btn-primary">${t("save_style")}</button></div>
+      </form>
+      <div class="style-preview">
+        <div class="toolbar"><span class="lbl">${t("preview")}</span>${langSeg("styleLang", S.styleLang || S.lang)}</div>
+        <div id="stylePreview">${stylePreviewHtml()}</div>
       </div>
-      <div class="parties">
-        <div><div class="lbl">${x("bill_to")}</div><b>${esc(c?.name || "—")}</b>${c?.company ? `<div>${esc(c.company)}</div>` : ""}${c?.phone ? `<div class="mono ltr hint">${esc(c.phone)}</div>` : ""}</div>
-        <div><div class="lbl">${x("project")}</div><b>${esc(p.title)}</b>${p.dueDate ? `<div class="hint">${x("f_dueDate")}: ${fdateLong(p.dueDate, L)}</div>` : ""}</div>
-      </div>
-      <div class="table-wrap"><table>
-        <thead><tr><th>${x("description")}</th><th class="num">${x("amount")}</th></tr></thead>
-        <tbody><tr><td><b>${esc(p.title)}</b>${p.type ? `<div class="hint">${esc(p.type)}</div>` : ""}${delsOf(p.id).length ? `<div class="hint">${delsOf(p.id).map(d => esc(d.label)).join(" · ")}</div>` : ""}${p.revisionsAllowed ? `<div class="hint">${x("incl_rounds", { n: p.revisionsAllowed })}</div>` : ""}</td><td class="num">${money(p.fee, L)}</td></tr></tbody>
-      </table></div>
-      ${pays.length ? `<div class="table-wrap"><table>
-        <thead><tr><th>${x("schedule")}</th><th>${x("f_dueDate")}</th><th>${x("f_status")}</th><th class="num">${x("amount")}</th></tr></thead>
-        <tbody>${pays.map(y => `<tr><td>${esc(payLabel(y, L))}</td><td>${y.dueDate ? fdate(y.dueDate, L) : "—"}</td><td>${y.paidAt ? x("paid_on", { d: fdate(y.paidAt, L) }) : x("ps_" + payState(y))}</td><td class="num">${money(y.amount, L)}</td></tr>`).join("")}</tbody>
-      </table></div>` : ""}
-      <div class="totals">
-        <div class="row"><span>${x("total")}</span><span class="v">${money(p.fee, L)}</span></div>
-        ${isQuote ? "" : `<div class="row good"><span>${x("paid")}</span><span class="v">${money(m.paid, L)}</span></div>`}
-        <div class="row big"><span>${x(isQuote ? "total" : "balance_due")}</span><span class="v">${money(isQuote ? p.fee : m.owed, L)}</span></div>
-      </div>
-      ${me.instapay || me.vcash ? `<div><div class="lbl" style="margin-bottom:8px">${x("pay_with")}</div><div class="payto">
-        ${me.instapay ? `<div><span class="hint">InstaPay</span><b>${esc(me.instapay)}</b></div>` : ""}
-        ${me.vcash ? `<div><span class="hint">${x("m_vcash")}</span><b>${esc(me.vcash)}</b></div>` : ""}</div></div>` : ""}
-      <div class="hint">${x("thanks_note")}</div>
-    </article>`;
+    </div>`;
+}
+const refreshPreview = () => { const el = $("#stylePreview"); if (el) el.innerHTML = stylePreviewHtml(); };
+
+/* Logos are scaled to at most 600px in the browser, so uploads stay small whatever the original size. */
+async function logoDataUrl(file) {
+  if (!/^image\/(png|jpeg|webp)$/.test(file.type)) throw new Error("logo_type");
+  const img = await createImageBitmap(file);
+  const k = Math.min(1, 600 / Math.max(img.width, img.height));
+  const c = document.createElement("canvas");
+  c.width = Math.max(1, Math.round(img.width * k));
+  c.height = Math.max(1, Math.round(img.height * k));
+  c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+  let url = c.toDataURL("image/png");
+  if (url.length > 500000) url = c.toDataURL("image/webp", 0.9);
+  if (url.length > 500000) url = c.toDataURL("image/jpeg", 0.85); // last resort; drops transparency
+  return url;
 }
 
 /* ============ modals ============ */
@@ -1027,9 +1119,10 @@ function versionForm(id, plainLink = false) {
 function msgModal(pid, kind, extra = {}) {
   const p = P(pid), c = clientOf(p);
   kind = kind || defaultKind(p);
+  if (kind === "document" && !extra.link && p.shareToken) extra = { link: shareUrl(p, c?.lang || S.lang) };
   const text = fillTemplate(kind, p, extra);
   openModal(`${mhead(t("wa_client"))}
-    <div class="chips">${["quote", "delivery", "reminder", "thanks"].map(k => `<button class="chip" data-act="msgKind" data-id="${p.id}" data-v="${k}" aria-pressed="${k === kind}">${t("tk_" + k)}</button>`).join("")}</div>
+    <div class="chips">${["quote", "delivery", "reminder", "thanks", "document"].map(k => `<button class="chip" data-act="msgKind" data-id="${p.id}" data-v="${k}" aria-pressed="${k === kind}">${t("tk_" + k)}</button>`).join("")}</div>
     <div class="hint">${c ? `${t("to")} <b style="color:var(--ink)">${esc(c.name)}</b>${c.phone ? ` · <span class="mono ltr">${esc(c.phone)}</span>` : ` · ${t("no_phone")}`} · ${c.lang === "ar" ? "العربية" : "English"}` : t("no_client_msg")}</div>
     <div class="field"><label for="msgText">${t("message")}</label><textarea id="msgText" class="msgbox" dir="${(c?.lang || S.lang) === "ar" ? "rtl" : "ltr"}" maxlength="4000">${esc(text)}</textarea></div>
     <div class="modal-actions">
@@ -1069,6 +1162,7 @@ const ACTS = {
   segPick: el => {
     $("#" + el.dataset.target).value = el.dataset.v;
     el.parentElement.querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", b === el));
+    if (el.closest("#styleForm")) refreshPreview();
   },
 
   newProject: el => projectForm(null, { clientId: num(el.dataset.client) }),
@@ -1117,7 +1211,7 @@ const ACTS = {
     });
   },
 
-  msg: el => msgModal(num(el.dataset.id), el.dataset.kind),
+  msg: el => msgModal(num(el.dataset.id), el.dataset.kind, el.dataset.link ? { link: el.dataset.link, lang: el.dataset.lang } : {}),
   msgKind: el => msgModal(num(el.dataset.id), el.dataset.v),
   copyMsg: async () => {
     const ta = $("#msgText");
@@ -1142,6 +1236,27 @@ const ACTS = {
       <div class="modal-actions"><button class="btn btn-danger" type="submit">${t("delete_account")}</button><button class="btn btn-ghost" type="button" data-act="close">${t("cancel")}</button></div></form>`);
   },
   confirmYes: () => S.confirm?.(),
+  sendDoc: el => sendDocModal(num(el.dataset.id)),
+  sendLang: el => { S.invLang = el.dataset.v; sendDocModal(num(el.dataset.id)); if (S.route.name === "invoice") render(); },
+  copyShare: async () => {
+    const el = $("#shareUrl");
+    try { await navigator.clipboard.writeText(el.value); toast(t("copied")); }
+    catch { el.select(); toast(t("copy_manual")); }
+  },
+  unshare: el => {
+    const id = num(el.dataset.id);
+    confirmBox(t("stop_sharing_confirm"), t("stop_sharing"), async () => {
+      if (await mutate("DELETE", `/projects/${id}/share`, undefined, t("sharing_stopped"))) closeModal();
+    });
+  },
+  emailDoc: el => emailDocForm(num(el.dataset.id)),
+  styleLang: el => { S.styleLang = el.dataset.v; el.parentElement.querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", b === el)); refreshPreview(); },
+  pickColor: el => {
+    $("#bColor").value = el.dataset.v;
+    el.parentElement.querySelectorAll(".swatch[data-v]").forEach(b => b.setAttribute("aria-pressed", b === el));
+    refreshPreview();
+  },
+  logoRemove: () => mutate("DELETE", "/me/logo", undefined, t("logo_removed")),
   calMonth: el => { const v = Number(el.dataset.v); S.calMonth = v ? shiftMonth(S.calMonth, v) : today().slice(0, 7); render(); },
   duplicate: async el => {
     const p = P(num(el.dataset.id));
@@ -1253,6 +1368,13 @@ const FORMS = {
     await mutate("POST", `/projects/${form.dataset.id}/notes`, { text: o.text });
   },
   async profile(o) { await mutate("PATCH", "/me", o, t("saved")); },
+  async style(o) {
+    await mutate("PATCH", "/me", { business: o.business, brand: brandFromForm(o) }, t("style_saved"));
+  },
+  async emailDoc(o, form) {
+    const j = await mutate("POST", `/projects/${form.dataset.id}/email`, { to: o.to, message: o.message, lang: form.dataset.lang }, t("email_sent", { to: o.to }));
+    if (j) closeModal();
+  },
   async defaults(o) {
     await mutate("PATCH", "/me", { currency: o.currency, depositPct: Number(o.depositPct), revisions: Number(o.revisions) }, t("saved"));
   },
@@ -1300,6 +1422,10 @@ document.addEventListener("input", e => {
   if (e.target.id === "pq") { S.q = e.target.value; $("#plist").innerHTML = projectsList(); }
   if (e.target.id === "cq") { S.clientQ = e.target.value; $("#clist").innerHTML = clientsList(); }
   if (e.target.id === "msgText") $("#waGo").href = waLink($("#modal").dataset.phone, e.target.value);
+  if (e.target.closest?.("#styleForm") && e.target.type !== "file") {
+    if (e.target.id === "bColor") document.querySelectorAll(".swatch[data-v]").forEach(b => b.setAttribute("aria-pressed", b.dataset.v.toLowerCase() === e.target.value.toLowerCase()));
+    refreshPreview();
+  }
 });
 document.addEventListener("change", e => {
   if (e.target.id === "mMethod") { S.money.method = e.target.value; render(); }
@@ -1308,8 +1434,19 @@ document.addEventListener("change", e => {
     mutate("PATCH", `/projects/${e.target.dataset.stage}`, { status: v }, t("status_set", { s: t("st_" + v) }));
   }
   if (e.target.id === "importFile") readImport(e.target);
+  if (e.target.id === "logoFile") uploadLogo(e.target);
 });
 document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#overlay").hidden) closeModal(); });
+
+async function uploadLogo(input) {
+  const file = input.files?.[0];
+  input.value = "";
+  if (!file) return;
+  let dataUrl;
+  try { dataUrl = await logoDataUrl(file); }
+  catch (e) { toast(t(e.message === "logo_type" ? "err_logo_type" : "err_logo_read")); return; }
+  await mutate("PUT", "/me/logo", { dataUrl }, t("logo_saved"));
+}
 
 async function readImport(input) {
   const file = input.files?.[0];

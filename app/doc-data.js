@@ -1,10 +1,11 @@
 /* Quote / invoice data and branding. Shared by the app (preview), the public link page and the server (link, email),
    so all three always show the same document. No DOM or Node APIs here. */
 
-export const LAYOUTS = ["classic", "bold", "minimal"];
+export const LAYOUTS = ["classic", "bold", "minimal", "sidebar", "studio", "corporate", "receipt", "letterhead", "split"];
 export const FONTS = ["modern", "clean", "elegant"];
+export const ACCENTS = ["solid", "outline", "gradient"];
 export const BRAND_COLORS = ["#1E6F5C", "#221E19", "#B23A2E", "#B9761F", "#2F5D8A", "#6B4E9B", "#0F7C8C", "#C2185B"];
-export const BRAND_DEFAULT = { color: "#1E6F5C", layout: "classic", font: "modern", address: "", website: "", taxId: "", showPay: true, footer: {} };
+export const BRAND_DEFAULT = { color: "#1E6F5C", layout: "classic", font: "modern", accent: "solid", address: "", website: "", taxId: "", showPay: true, footer: {}, intro: {} };
 
 export function normalizeBrand(b) {
   b = b && typeof b === "object" ? b : {};
@@ -13,8 +14,10 @@ export function normalizeBrand(b) {
     color: /^#[0-9a-f]{6}$/i.test(b.color || "") ? b.color : BRAND_DEFAULT.color,
     layout: LAYOUTS.includes(b.layout) ? b.layout : BRAND_DEFAULT.layout,
     font: FONTS.includes(b.font) ? b.font : BRAND_DEFAULT.font,
+    accent: ACCENTS.includes(b.accent) ? b.accent : BRAND_DEFAULT.accent,
     showPay: b.showPay !== false,
     footer: { ...(b.footer && typeof b.footer === "object" ? b.footer : {}) },
+    intro: { ...(b.intro && typeof b.intro === "object" ? b.intro : {}) },
   };
 }
 

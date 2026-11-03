@@ -1,5 +1,5 @@
 import { STR, TEMPLATES, TYPES } from "./i18n.js";
-import { docData, sampleDoc, normalizeBrand, BRAND_COLORS, LAYOUTS, FONTS } from "./doc-data.js";
+import { docData, sampleDoc, normalizeBrand, BRAND_COLORS, LAYOUTS, FONTS, ACCENTS } from "./doc-data.js";
 import { renderDoc } from "./doc-render.js";
 
 /* ============ utilities ============ */
@@ -926,22 +926,28 @@ function emailDocForm(pid) {
 /* ============ your style ============ */
 function brandFromForm(o) {
   return {
-    color: o.color, layout: o.layout, font: o.font, address: o.address, website: o.website, taxId: o.taxId,
-    showPay: !!o.showPay, footer: { ar: o.footer_ar || "", en: o.footer_en || "" },
+    color: o.color, layout: o.layout, font: o.font, accent: o.accent, address: o.address, website: o.website, taxId: o.taxId,
+    showPay: !!o.showPay, footer: { ar: o.footer_ar || "", en: o.footer_en || "" }, intro: { ar: o.intro_ar || "", en: o.intro_en || "" },
   };
 }
-function stylePreviewHtml() {
+/* The document the style page previews: the user's busiest real project, or a sample, with the unsaved form applied. */
+function previewDoc() {
   const form = $("#styleForm"), L = S.styleLang || S.lang;
   const me = { ...D().me };
   if (form) { const o = formObj(form); me.brand = brandFromForm(o); me.business = o.business; }
   const p = D().projects.filter(x => x.status !== "archived" && x.fee > 0).sort(byPriority)[0];
   const d = p ? docData({ project: p, client: clientOf(p), payments: paysOf(p.id), deliverables: delsOf(p.id), me, today: today() }) : sampleDoc(me, L, today());
+  return { d, L };
+}
+function stylePreviewHtml() {
+  const { d, L } = previewDoc();
   return renderDoc(d, { tl, lang: L, logoUrl: logoUrl() });
 }
+const thumbHtml = (d, L, layout) => renderDoc({ ...d, brand: { ...d.brand, layout } }, { tl, lang: L, logoUrl: logoUrl() });
 function styleView() {
   const me = D().me, b = normalizeBrand(me.brand), lv = me.logoVersion;
   const FONT_FACE = { modern: "Alexandria", clean: "Readex Pro", elegant: "El Messiri" };
-  const ta = (l, v) => `<div class="field"><label for="bf_${l}">${l === "ar" ? "العربية" : "English"}</label><textarea id="bf_${l}" name="footer_${l}" dir="${l === "ar" ? "rtl" : "ltr"}" maxlength="600" rows="3" placeholder="${esc(tl(l, "footer_ph"))}">${esc(v)}</textarea></div>`;
+  const ta = (l, v, kind = "footer") => `<div class="field"><label for="b${kind}_${l}">${l === "ar" ? "العربية" : "English"}</label><textarea id="b${kind}_${l}" name="${kind}_${l}" dir="${l === "ar" ? "rtl" : "ltr"}" maxlength="${kind === "intro" ? 1200 : 600}" rows="3" placeholder="${esc(tl(l, kind + "_ph"))}">${esc(v)}</textarea></div>`;
   return `<a class="back" href="#settings">${I.back}${t("nav_settings")}</a>
     <div class="toolbar"><div><h1>${t("style_title")}</h1><span class="hint">${t("style_hint")}</span></div></div>
     <div class="style-layout">
@@ -955,9 +961,13 @@ function styleView() {
         <div class="field"><span class="lbl">${t("brand_color")}</span>
           <div class="swatches">${BRAND_COLORS.map(c => `<button type="button" class="swatch" data-act="pickColor" data-v="${c}" style="--c:${c}" aria-label="${c}" aria-pressed="${b.color.toLowerCase() === c.toLowerCase()}"></button>`).join("")}
             <label class="swatch custom" title="${t("custom_color")}"><input type="color" id="bColor" name="color" value="${b.color}" aria-label="${t("custom_color")}"></label></div></div>
-        <div class="field"><span class="lbl">${t("layout")}</span>
-          <div class="seg">${LAYOUTS.map(l => `<button type="button" data-act="segPick" data-target="bLayout" data-v="${l}" aria-pressed="${b.layout === l}">${t("layout_" + l)}</button>`).join("")}</div>
-          <input type="hidden" id="bLayout" name="layout" value="${b.layout}"></div>
+        <fieldset class="field tpl-field"><legend class="lbl">${t("layout")}</legend>
+          <div class="tpl-gallery">${LAYOUTS.map(l => `<label class="tpl"><input type="radio" name="layout" value="${l}" ${b.layout === l ? "checked" : ""}>
+            <span class="tpl-view" aria-hidden="true"><span class="tpl-doc" data-layout="${l}">${thumbHtml(previewDoc().d, S.styleLang || S.lang, l)}</span></span>
+            <span class="tpl-name">${t("layout_" + l)}</span></label>`).join("")}</div></fieldset>
+        <div class="field"><span class="lbl">${t("accent")}</span>
+          <div class="seg">${ACCENTS.map(a => `<button type="button" data-act="segPick" data-target="bAccent" data-v="${a}" aria-pressed="${b.accent === a}">${t("accent_" + a)}</button>`).join("")}</div>
+          <input type="hidden" id="bAccent" name="accent" value="${b.accent}"></div>
         <div class="field"><span class="lbl">${t("font")}</span>
           <div class="seg">${FONTS.map(f => `<button type="button" data-act="segPick" data-target="bFont" data-v="${f}" aria-pressed="${b.font === f}" style="font-family:'${FONT_FACE[f]}'">${t("font_" + f)}</button>`).join("")}</div>
           <input type="hidden" id="bFont" name="font" value="${b.font}"></div>
@@ -970,6 +980,7 @@ function styleView() {
           <div class="field"><label for="bTax">${t("f_taxId")}</label><input id="bTax" name="taxId" class="ltr" maxlength="60" value="${esc(b.taxId)}"></div>
         </div>
         <label class="check"><input type="checkbox" name="showPay" ${b.showPay ? "checked" : ""}><span>${t("show_pay")}</span></label>
+        <div class="field"><span class="lbl">${t("intro_note")}</span><div class="grid2">${ta("ar", b.intro.ar, "intro")}${ta("en", b.intro.en, "intro")}</div><span class="hint">${t("intro_hint")}</span></div>
         <div class="field"><span class="lbl">${t("footer_note")}</span><div class="grid2">${ta("ar", b.footer.ar)}${ta("en", b.footer.en)}</div></div>
         <div class="acts"><button type="submit" class="btn btn-primary">${t("save_style")}</button></div>
       </form>
@@ -979,7 +990,15 @@ function styleView() {
       </div>
     </div>`;
 }
-const refreshPreview = () => { const el = $("#stylePreview"); if (el) el.innerHTML = stylePreviewHtml(); };
+/* Re-draws the big preview and, unless only the layout changed, the gallery thumbnails (inputs stay, so focus isn't lost). */
+function refreshPreview(withGallery = true) {
+  const el = $("#stylePreview");
+  if (!el) return;
+  el.innerHTML = stylePreviewHtml();
+  if (!withGallery) return;
+  const { d, L } = previewDoc();
+  document.querySelectorAll(".tpl-doc[data-layout]").forEach(t => { t.innerHTML = thumbHtml(d, L, t.dataset.layout); });
+}
 
 /* Logos are scaled to at most 600px in the browser, so uploads stay small whatever the original size. */
 async function logoDataUrl(file) {
@@ -1424,7 +1443,7 @@ document.addEventListener("input", e => {
   if (e.target.id === "msgText") $("#waGo").href = waLink($("#modal").dataset.phone, e.target.value);
   if (e.target.closest?.("#styleForm") && e.target.type !== "file") {
     if (e.target.id === "bColor") document.querySelectorAll(".swatch[data-v]").forEach(b => b.setAttribute("aria-pressed", b.dataset.v.toLowerCase() === e.target.value.toLowerCase()));
-    refreshPreview();
+    refreshPreview(e.target.name !== "layout");
   }
 });
 document.addEventListener("change", e => {

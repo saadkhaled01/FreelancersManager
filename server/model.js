@@ -6,8 +6,8 @@ export const METHODS = ["", "instapay", "vcash", "cash", "bank", "other"];
 export const PAY_KINDS = ["deposit", "balance", "extra"];
 export const CURRENCIES = ["EGP", "USD", "EUR", "SAR", "AED", "KWD", "QAR", "GBP"];
 export const LANGS = ["ar", "en"];
-export { LAYOUTS, FONTS } from "../app/doc-data.js";
-import { LAYOUTS, FONTS } from "../app/doc-data.js";
+export { LAYOUTS, FONTS, ACCENTS } from "../app/doc-data.js";
+import { LAYOUTS, FONTS, ACCENTS } from "../app/doc-data.js";
 export const TEMPLATE_KINDS = ["quote", "delivery", "reminder", "thanks", "document"];
 
 export class HttpError extends Error {
@@ -143,12 +143,15 @@ function coerce(spec, key, v) {
       if (!v || typeof v !== "object" || Array.isArray(v)) throw bad(key);
       const str = (s, max) => { if (s == null) return ""; if (typeof s !== "string" || s.trim().length > max) throw bad(key); return s.trim(); };
       const out = {
-        color: v.color ?? "#1E6F5C", layout: v.layout ?? "classic", font: v.font ?? "modern",
-        address: str(v.address, 200), website: str(v.website, 200), taxId: str(v.taxId, 60), showPay: v.showPay !== false, footer: {},
+        color: v.color ?? "#1E6F5C", layout: v.layout ?? "classic", font: v.font ?? "modern", accent: v.accent ?? "solid",
+        address: str(v.address, 200), website: str(v.website, 200), taxId: str(v.taxId, 60), showPay: v.showPay !== false, footer: {}, intro: {},
       };
-      if (!/^#[0-9a-f]{6}$/i.test(out.color) || !LAYOUTS.includes(out.layout) || !FONTS.includes(out.font)) throw bad(key);
+      if (!/^#[0-9a-f]{6}$/i.test(out.color) || !LAYOUTS.includes(out.layout) || !FONTS.includes(out.font) || !ACCENTS.includes(out.accent)) throw bad(key);
       if (out.website && !/^(https?:\/\/)?[^\s<>"]+\.[^\s<>"]+$/i.test(out.website)) throw bad(key);
-      for (const l of LANGS) { const s = str(v.footer?.[l], 600); if (s) out.footer[l] = s; }
+      for (const l of LANGS) {
+        const s = str(v.footer?.[l], 600); if (s) out.footer[l] = s;
+        const i = str(v.intro?.[l], 1200); if (i) out.intro[l] = i;
+      }
       return JSON.stringify(out);
     }
     case "templates": {

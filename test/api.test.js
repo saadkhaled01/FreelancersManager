@@ -350,10 +350,13 @@ const PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJA
 test("style: brand settings and logo", async () => {
   const a = agent();
   await signup(a, "brand@example.com");
-  const brand = { color: "#2F5D8A", layout: "bold", font: "elegant", address: "Cairo", website: "studio.example", taxId: "123-456", showPay: false, footer: { ar: "شكرًا", en: "Thanks" } };
+  const brand = { color: "#2F5D8A", layout: "bold", font: "elegant", accent: "gradient", address: "Cairo", website: "studio.example", taxId: "123-456", showPay: false, footer: { ar: "شكرًا", en: "Thanks" }, intro: { en: "Dear client" } };
   const r = await a("PATCH", "/me", { brand });
   assert.deepEqual(r.body.data.me.brand, brand);
-  for (const bad of [{ color: "red" }, { layout: "fancy" }, { font: "comic" }, { website: "javascript:alert(1)" }, { footer: { en: "x".repeat(601) } }])
+  for (const layout of ["sidebar", "studio", "corporate", "receipt", "letterhead", "split"])
+    assert.equal((await a("PATCH", "/me", { brand: { ...brand, layout } })).body.data.me.brand.layout, layout);
+  await a("PATCH", "/me", { brand });
+  for (const bad of [{ color: "red" }, { layout: "fancy" }, { font: "comic" }, { accent: "neon" }, { website: "javascript:alert(1)" }, { footer: { en: "x".repeat(601) } }, { intro: { ar: "x".repeat(1201) } }])
     assert.equal((await a("PATCH", "/me", { brand: { ...brand, ...bad } })).status, 400, JSON.stringify(bad));
   assert.equal(r.body.data.me.logoVersion, null);
   assert.equal((await a("PUT", "/me/logo", { dataUrl: "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=" })).status, 400);

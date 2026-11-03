@@ -127,6 +127,22 @@ const MIGRATIONS = [
   "ALTER TABLE users ADD COLUMN logo TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE projects ADD COLUMN share_token TEXT",
   "CREATE UNIQUE INDEX IF NOT EXISTS projects_share_token ON projects(share_token)",
+  `CREATE TABLE IF NOT EXISTS items(
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    label TEXT NOT NULL,
+    qty REAL NOT NULL DEFAULT 1,
+    unit_price REAL NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  )`,
+  "CREATE INDEX IF NOT EXISTS items_user ON items(user_id)",
+  "ALTER TABLE projects ADD COLUMN discount REAL NOT NULL DEFAULT 0",
+  "ALTER TABLE projects ADD COLUMN tax_rate REAL NOT NULL DEFAULT 0",
+  "ALTER TABLE projects ADD COLUMN accepted_at TEXT",
+  "ALTER TABLE projects ADD COLUMN accepted_by TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE projects ADD COLUMN accepted_ip TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE users ADD COLUMN tax_rate REAL NOT NULL DEFAULT 0",
 ];
 
 export function openDb(file) {

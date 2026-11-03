@@ -9,8 +9,8 @@ import {
 } from "./model.js";
 import { createGoogle } from "./google.js";
 import { seedExamples } from "./seed.js";
-import { createMailer, resetEmail, docEmail } from "./mail.js";
-import { docData } from "../app/doc-data.js";
+import { createMailer, resetEmail, docEmail, acceptedEmail } from "./mail.js";
+import { docData, itemTotals } from "../app/doc-data.js";
 import { buildIcs } from "./ics.js";
 import crypto from "node:crypto";
 
@@ -47,6 +47,7 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
       client: d.clients.find(c => c.id === project.clientId) || null,
       payments: d.payments.filter(x => x.projectId === project.id),
       deliverables: d.deliverables.filter(x => x.projectId === project.id),
+      items: d.items.filter(x => x.projectId === project.id),
     });
   }
   const shareToken = (userId, projectId) => {
@@ -63,6 +64,7 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
     forgotEmail: new auth.Limiter(3, 3600e3),    // reset emails per address
     reset: new auth.Limiter(20, 3600e3),         // reset attempts per IP
     docEmail: new auth.Limiter(30, 3600e3),      // document emails per user
+    accept: new auth.Limiter(10, 3600e3),        // quote acceptances per IP
   };
   /* Behind a proxy (Railway), the client is the last address the proxy appended. Only trusted when TRUST_PROXY is on. */
   const clientIp = req => {
@@ -100,6 +102,7 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
 
     // Public routes
     if (parts[0] === "public" && parts[1] === "doc" && method === "GET") return publicDoc(res, parts[2], parts[3]);
+    if (parts[0] === "public" && parts[1] === "doc" && parts[3] === "accept" && method === "POST") return acceptQuote(req, res, parts[2], body);
     if (method === "POST" && parts[0] === "signup") return signup(req, res, body, secure);
     if (method === "POST" && parts[0] === "forgot") return forgot(req, res, body, secure);
     if (method === "POST" && parts[0] === "reset") return reset(req, res, body, secure);
@@ -158,7 +161,7 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
         if (!auth.checkPassword(String(body.password ?? ""), u.pass_hash)) throw new HttpError(400, "wrong_password");
         if (google.available) await google.disconnect(userId);
         tx(db, () => {
-          for (const t of ["activity", "payments", "deliverables", "projects", "clients", "sessions"])
+          for (const t of ["activity", "items", "payments", "deliverables", "projects", "clients", "sessions"])
             db.prepare(`DELETE FROM ${t} WHERE user_id = ?`).run(userId);
           db.prepare("DELETE FROM users WHERE id = ?").run(userId);
         });
@@ -174,7 +177,7 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
       res.setHeader("Content-Disposition", `attachment; filename="freelancers-manager-${today()}.json"`);
       return send(res, 200, {
         app: "freelancers-manager", version: 1, exportedAt: now(), settings,
-        clients: d.clients, projects: d.projects, deliverables: d.deliverables, payments: d.payments, activity: d.activity,
+        clients: d.clients, projects: d.projects, deliverables: d.deliverables, payments: d.payments, items: d.items, activity: d.activity,
       });
     }
     if (parts[0] === "import" && method === "POST") {
@@ -312,6 +315,35 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
     return send(res, 200, d);
   }
 
+  /* The client accepts a quote from its shared link by typing their name. The project moves from Brief to Booked. */
+  function acceptQuote(req, res, token, body) {
+    const ip = clientIp(req);
+    if (limits.accept.blocked(ip)) throw new HttpError(429, "too_many");
+    limits.accept.hit(ip);
+    const p = token && token.length < 60 && db.prepare("SELECT * FROM projects WHERE share_token = ?").get(token);
+    if (!p) throw new HttpError(404, "not_found");
+    if (p.status !== "lead" || p.accepted_at) throw new HttpError(409, "not_a_quote");
+    const name = String(body.name ?? "").trim();
+    if (name.length < 2 || name.length > 120) throw new HttpError(400, "invalid", { field: "name" });
+    if (body.agree !== true) throw new HttpError(400, "invalid", { field: "agree" });
+    const t = now();
+    tx(db, () => {
+      db.prepare("UPDATE projects SET status = 'booked', status_at = ?, updated_at = ?, accepted_at = ?, accepted_by = ?, accepted_ip = ? WHERE id = ?")
+        .run(t, t, t, name, String(ip || "").slice(0, 60), p.id);
+      log(db, p.user_id, p.id, "status", { from: "lead", to: "booked" });
+      log(db, p.user_id, p.id, "accepted", { name }); // logged last so it tops the activity feed
+    });
+    google.schedule(p.user_id);
+    const u = db.prepare("SELECT email, name, lang FROM users WHERE id = ?").get(p.user_id);
+    if (mailer.configured) {
+      const msg = acceptedEmail({ lang: u.lang, name: u.name, client: name, title: p.title, code: p.code, link: appUrl ? `${appUrl.replace(/\/$/, "")}/#project/${p.id}` : "" });
+      mailer.send({ to: u.email, ...msg }).catch(e => console.error("Acceptance email failed:", e.message));
+    }
+    const d = buildDoc(p.user_id, p.id);
+    d.hasLogo = !!db.prepare("SELECT logo FROM users WHERE id = ?").get(p.user_id).logo;
+    return send(res, 200, d);
+  }
+
   async function emailDoc(userId, projectId, body) {
     if (!mailer.configured || !appUrl) throw new HttpError(400, "mail_unavailable");
     const to = String(body.to ?? "").trim();
@@ -364,7 +396,7 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
   /* ---------- records ---------- */
   function checkRefs(table, userId, values) {
     if (table === "projects" && values.client_id != null) owned(db, "clients", userId, values.client_id);
-    if ((table === "deliverables" || table === "payments") && values.project_id != null) owned(db, "projects", userId, values.project_id);
+    if (["deliverables", "payments", "items"].includes(table) && values.project_id != null) owned(db, "projects", userId, values.project_id);
   }
 
   function create(table, userId, body) {
@@ -374,6 +406,7 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
     if (table === "clients") return insert(db, table, { ...values, user_id: userId, created_at: t, updated_at: t });
     if (table === "projects") return createProject(userId, values, body, t);
     const id = insert(db, table, { ...values, user_id: userId, created_at: t });
+    if (table === "items") recalc(userId, values.project_id);
     if (table === "payments" && values.paid_at) {
       log(db, userId, values.project_id, "paid", { amount: values.amount, method: values.method || "" });
       settle(userId, values.project_id);
@@ -382,9 +415,9 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
   }
 
   function createProject(userId, values, body, t) {
-    const u = db.prepare("SELECT deposit_pct, revisions FROM users WHERE id = ?").get(userId);
+    const u = db.prepare("SELECT deposit_pct, revisions, tax_rate FROM users WHERE id = ?").get(userId);
     const row = {
-      status: "lead", revisions_allowed: u.revisions, ...values,
+      status: "lead", revisions_allowed: u.revisions, tax_rate: u.tax_rate || 0, ...values,
       user_id: userId, code: nextCode(db, userId), status_at: t, created_at: t, updated_at: t,
     };
     const id = insert(db, "projects", row);
@@ -403,10 +436,13 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
     const values = {
       client_id: src.client_id, title, type: src.type, status: "lead", start_date: today(), due_date: null,
       fee: src.fee, revisions_allowed: src.revisions_allowed, notes: src.notes, folder_url: src.folder_url,
+      discount: src.discount, tax_rate: src.tax_rate,
     };
     const newId = createProject(userId, values, {}, t);
     for (const d of db.prepare("SELECT label FROM deliverables WHERE project_id = ? ORDER BY id").all(src.id))
       insert(db, "deliverables", { user_id: userId, project_id: newId, label: d.label, done: 0, due_date: null, created_at: t });
+    for (const i of db.prepare("SELECT label, qty, unit_price FROM items WHERE project_id = ? ORDER BY id").all(src.id))
+      insert(db, "items", { user_id: userId, project_id: newId, ...i, created_at: t });
     return newId;
   }
 
@@ -429,6 +465,8 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
     if (table === "clients") values.updated_at = t;
     if (table === "projects") {
       values.updated_at = t;
+      // With line items the fee is calculated, never typed.
+      if ("fee" in values && db.prepare("SELECT 1 FROM items WHERE project_id = ?").get(old.id)) delete values.fee;
       if (values.status && values.status !== old.status) {
         values.status_at = t;
         if (old.status === "with_client" && values.status === "revising" && !("revisions_used" in values)) {
@@ -447,8 +485,42 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
     if (table === "deliverables" && values.done === 1 && !old.done)
       log(db, userId, old.project_id, "done", { label: values.label ?? old.label });
     update(db, table, old.id, values);
+    if (table === "items") recalc(userId, old.project_id);
+    if (table === "projects") {
+      if ("discount" in values || "tax_rate" in values) recalc(userId, old.id);
+      else if ("fee" in values && values.fee !== old.fee) rebalance(userId, old.id, old.fee, values.fee);
+    }
     if (table === "payments") settle(userId, old.project_id);
     if (table === "projects" && values.status === "delivered") settle(userId, old.id);
+  }
+
+  /* With line items, the project fee is their total (after discount and tax). */
+  function recalc(userId, projectId) {
+    const p = db.prepare("SELECT id, fee, discount, tax_rate FROM projects WHERE id = ? AND user_id = ?").get(projectId, userId);
+    if (!p) return;
+    const items = db.prepare("SELECT qty, unit_price AS unitPrice FROM items WHERE project_id = ?").all(p.id);
+    if (!items.length) return;
+    const fee = itemTotals(items, p.discount, p.tax_rate).total;
+    if (Math.abs(fee - p.fee) < 0.005) return;
+    db.prepare("UPDATE projects SET fee = ?, updated_at = ? WHERE id = ?").run(fee, now(), p.id);
+    rebalance(userId, p.id, p.fee, fee);
+  }
+
+  /* When the fee changes, the unpaid balance payment absorbs the difference. A project with no payments yet gets the
+     usual deposit / balance split. Anything else is left alone; the app shows what's unscheduled. */
+  function rebalance(userId, projectId, oldFee, newFee) {
+    const pays = db.prepare("SELECT id, kind, amount, paid_at FROM payments WHERE project_id = ? ORDER BY id").all(projectId);
+    if (!pays.length) {
+      const p = db.prepare("SELECT start_date, due_date FROM projects WHERE id = ?").get(projectId);
+      const u = db.prepare("SELECT deposit_pct FROM users WHERE id = ?").get(userId);
+      for (const x of defaultPayments(newFee, u.deposit_pct, p.start_date, p.due_date))
+        insert(db, "payments", { ...x, user_id: userId, project_id: projectId, created_at: now() });
+      return;
+    }
+    const bal = [...pays].reverse().find(x => x.kind === "balance" && !x.paid_at);
+    if (!bal) return;
+    const amount = Math.round((bal.amount + newFee - oldFee) * 100) / 100;
+    if (amount >= 0) db.prepare("UPDATE payments SET amount = ? WHERE id = ?").run(amount, bal.id);
   }
 
   /* A delivered project that's fully paid is finished: move it to Done, like Sorah Ops' collection → done step. */
@@ -469,6 +541,7 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
       if (n) throw new HttpError(409, "client_has_projects", { count: n });
     }
     db.prepare(`DELETE FROM ${table} WHERE id = ?`).run(old.id);
+    if (table === "items") recalc(userId, old.project_id);
   }
 
   /* ---------- import (replaces everything the user has) ---------- */
@@ -476,7 +549,7 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
     if (body?.app !== "freelancers-manager" || body.version !== 1) throw new HttpError(400, "bad_file");
     const list = k => (Array.isArray(body[k]) ? body[k] : []);
     tx(db, () => {
-      for (const t of ["activity", "payments", "deliverables", "projects", "clients"])
+      for (const t of ["activity", "items", "payments", "deliverables", "projects", "clients"])
         db.prepare(`DELETE FROM ${t} WHERE user_id = ?`).run(userId);
       if (body.settings) {
         update(db, "users", userId, validate(ME_SPEC, body.settings, { partial: true }));
@@ -496,7 +569,7 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
           ...v, user_id: userId, code, status_at: str(p.statusAt) || t, created_at: str(p.createdAt) || t, updated_at: t,
         }));
       }
-      for (const k of ["deliverables", "payments"]) {
+      for (const k of ["deliverables", "payments", "items"]) {
         for (const r of list(k)) {
           const pid = projectIds.get(r.projectId);
           if (!pid) continue;

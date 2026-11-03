@@ -425,3 +425,77 @@ test("email a document with branding", async () => {
   const act = r.body.data.activity.find(x => x.kind === "sent");
   assert.equal(act.data.via, "email");
 });
+
+test("line items: totals, discount, tax, balance follows the total", async () => {
+  const a = agent();
+  await signup(a, "items@example.com");
+  await a("PATCH", "/me", { taxRate: 14 });
+  const p = await a("POST", "/projects", { title: "Brand film", fee: 1000, status: "active" });
+  const id = p.body.id;
+  let data = p.body.data;
+  assert.equal(data.projects.find(x => x.id === id).taxRate, 14, "new projects take the default tax rate");
+  const dep = data.payments.find(x => x.projectId === id && x.kind === "deposit");
+  await a("PATCH", `/payments/${dep.id}`, { paidAt: "2030-01-01", method: "cash" });
+  // Items replace the typed fee: 2 × 3000 + 1 × 1500 = 7500, −500 discount = 7000, +14% = 7980
+  await a("POST", "/items", { projectId: id, label: "Shoot day", qty: 2, unitPrice: 3000 });
+  const it = await a("POST", "/items", { projectId: id, label: "Edit", qty: 1, unitPrice: 1500 });
+  data = (await a("PATCH", `/projects/${id}`, { discount: 500 })).body.data;
+  let proj = data.projects.find(x => x.id === id);
+  assert.equal(proj.fee, 7980);
+  const pays = data.payments.filter(x => x.projectId === id);
+  assert.equal(pays.find(x => x.kind === "deposit").amount, 500, "paid deposit untouched");
+  assert.equal(pays.find(x => x.kind === "balance").amount, 7480, "balance absorbs the change");
+  // Typing a fee is ignored while items exist.
+  data = (await a("PATCH", `/projects/${id}`, { fee: 1 })).body.data;
+  assert.equal(data.projects.find(x => x.id === id).fee, 7980);
+  // Removing an item recalculates: 6000 − 500 = 5500 + 14% = 6270
+  data = (await a("DELETE", `/items/${it.body.id}`)).body.data;
+  assert.equal(data.projects.find(x => x.id === id).fee, 6270);
+  assert.equal(data.payments.find(x => x.projectId === id && x.kind === "balance").amount, 5770);
+  assert.equal((await a("POST", "/items", { projectId: id, label: "Bad", qty: 0, unitPrice: 1 })).status, 400);
+  assert.equal((await a("PATCH", `/projects/${id}`, { taxRate: 101 })).status, 400);
+  // A project that starts at 0 gets the deposit / balance split once items give it a price.
+  const q = await a("POST", "/projects", { title: "Logo", fee: 0 });
+  data = (await a("POST", "/items", { projectId: q.body.id, label: "Logo design", qty: 1, unitPrice: 2000 })).body.data;
+  assert.deepEqual(data.payments.filter(x => x.projectId === q.body.id).map(x => x.kind), ["deposit", "balance"]);
+  // Items survive duplicate and backup.
+  const dup = await a("POST", `/projects/${id}/duplicate`, {});
+  assert.equal(dup.body.data.items.filter(x => x.projectId === dup.body.id).length, 1);
+  assert.equal(dup.body.data.projects.find(x => x.id === dup.body.id).fee, 6270);
+  const ex = await a("GET", "/export");
+  assert.ok(ex.body.items.length >= 3);
+  // Other users can't add items to this project.
+  const b = agent(); await signup(b, "items-b@example.com");
+  assert.equal((await b("POST", "/items", { projectId: id, label: "x", qty: 1, unitPrice: 1 })).status, 404);
+});
+
+test("client accepts a quote from the shared link", async () => {
+  const a = agent();
+  await signup(a, "accept@example.com", { lang: "en" });
+  const p = await a("POST", "/projects", { title: "Website", fee: 5000 });
+  await a("POST", "/items", { projectId: p.body.id, label: "Design", qty: 1, unitPrice: 5000 });
+  const token = (await a("POST", `/projects/${p.body.id}/share`, {})).body.data.projects.find(x => x.id === p.body.id).shareToken;
+  const doc = await (await fetch(`${base}/api/public/doc/${token}`)).json();
+  assert.equal(doc.kind, "quote");
+  assert.equal(doc.items[0].amount, 5000);
+  assert.equal(doc.accepted, null);
+  const post = body => fetch(`${base}/api/public/doc/${token}/accept`, { method: "POST", headers: { "content-type": "application/json", "x-forwarded-for": "10.7.7.7" }, body: JSON.stringify(body) });
+  assert.equal((await post({ name: "Mona Adel" })).status, 400, "must tick agree");
+  assert.equal((await post({ name: "M", agree: true })).status, 400, "needs a name");
+  outbox.length = 0;
+  const r = await post({ name: "Mona Adel", agree: true });
+  assert.equal(r.status, 200);
+  const after = await r.json();
+  assert.equal(after.kind, "invoice");
+  assert.equal(after.accepted.by, "Mona Adel");
+  assert.equal(after.accepted.ip, undefined, "IP is not exposed");
+  assert.equal((await post({ name: "Mona Adel", agree: true })).status, 409, "only once");
+  await new Promise(res => setTimeout(res, 10));
+  assert.equal(outbox.length, 1);
+  assert.match(outbox[0].subject, /Mona Adel accepted quote FM-/);
+  const data = (await a("GET", "/data")).body.data;
+  const proj = data.projects.find(x => x.id === p.body.id);
+  assert.equal(proj.status, "booked");
+  assert.equal(proj.acceptedBy, "Mona Adel");
+  assert.ok(data.activity.some(x => x.kind === "accepted" && x.data.name === "Mona Adel"));
+});

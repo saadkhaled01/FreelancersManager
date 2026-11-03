@@ -94,3 +94,14 @@ function inkFor(hex) {
   const v = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255).map(x => (x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4));
   return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2] > 0.4 ? "#1F1C18" : "#FFFFFF";
 }
+
+/* Tells the freelancer a client accepted a quote from its shared link. */
+export function acceptedEmail({ lang, name, client, title, code, link }) {
+  const ar = lang === "ar";
+  const subject = ar ? `${client} وافق على عرض السعر ${code}` : `${client} accepted quote ${code}`;
+  const text = ar
+    ? `أهلًا ${name}،\n\n${client} وافق على عرض السعر «${title}» (${code}). المشروع اتنقل لـ«الموعد مؤكد».${link ? `\n\n${link}` : ""}`
+    : `Hi ${name},\n\n${client} accepted your quote for "${title}" (${code}). The project has moved to Booked.${link ? `\n\n${link}` : ""}`;
+  const html = `<div dir="${ar ? "rtl" : "ltr"}" style="font-family:system-ui,sans-serif;font-size:15px;line-height:1.6;color:#221E19">${escHtml(text).replace(/\n/g, "<br>")}</div>`;
+  return { subject, text, html };
+}

@@ -71,11 +71,18 @@ export function renderDoc(d, { tl, lang = d.lang, logoUrl = "" }) {
       ${d.project.type ? `<div class="d-sub">${esc(d.project.type)}</div>` : ""}</div>`;
   const parties = `<section class="d-parties">${billTo}${projectBox}</section>`;
   const introBox = intro ? `<section class="d-intro">${nl2br(intro)}</section>` : "";
-  const items = `<table class="d-items">
+  const rounds = d.project.revisionsAllowed ? `<div class="d-sub">${x("incl_rounds", { n: d.project.revisionsAllowed })}</div>` : "";
+  const hasItems = d.items?.length > 0;
+  const items = hasItems
+    ? `<table class="d-items d-lines">
+      <thead><tr><th>${x("description")}</th><th class="n">${x("qty")}</th><th class="n d-unit">${x("unit_price")}</th><th class="n">${x("amount")}</th></tr></thead>
+      <tbody>${d.items.map(i => `<tr><td>${esc(i.label)}</td><td class="n"><span class="num">${fmt(i.qty)}</span></td><td class="n d-unit">${money(i.unitPrice)}</td><td class="n">${money(i.amount)}</td></tr>`).join("")}</tbody>
+    </table>
+    ${d.deliverables.length || rounds ? `<section class="d-dels"><div class="d-lbl">${x("deliverables")}</div>${d.deliverables.length ? `<ul>${d.deliverables.map(l => `<li>${esc(l)}</li>`).join("")}</ul>` : ""}${rounds}</section>` : ""}`
+    : `<table class="d-items">
       <thead><tr><th>${x("description")}</th><th class="n">${x("amount")}</th></tr></thead>
       <tbody><tr><td><b>${esc(d.project.title)}</b>
-        ${d.deliverables.length ? `<ul>${d.deliverables.map(l => `<li>${esc(l)}</li>`).join("")}</ul>` : ""}
-        ${d.project.revisionsAllowed ? `<div class="d-sub">${x("incl_rounds", { n: d.project.revisionsAllowed })}</div>` : ""}</td>
+        ${d.deliverables.length ? `<ul>${d.deliverables.map(l => `<li>${esc(l)}</li>`).join("")}</ul>` : ""}${rounds}</td>
         <td class="n">${money(d.fee)}</td></tr></tbody>
     </table>`;
   const sched = d.payments.length ? `<table class="d-sched">
@@ -84,8 +91,11 @@ export function renderDoc(d, { tl, lang = d.lang, logoUrl = "" }) {
         <td><span class="d-st ${p.state}">${p.paidAt ? x("paid_on", { d: longDate(p.paidAt, lang) }) : x("ps_" + p.state)}</span></td><td class="n">${money(p.amount)}</td></tr>`).join("")}</tbody>
     </table>` : "";
   const totals = `<section class="d-totals">
-      <div class="r"><span>${x("total")}</span><span>${money(d.fee)}</span></div>
-      ${isQuote ? "" : `<div class="r"><span>${x("paid")}</span><span>${money(d.paid)}</span></div>`}
+      ${hasItems && (d.discount || d.tax) ? `<div class="r"><span>${x("subtotal")}</span><span>${money(d.subtotal)}</span></div>` : ""}
+      ${d.discount ? `<div class="r"><span>${x("discount")}</span><span>− ${money(d.discount)}</span></div>` : ""}
+      ${d.tax ? `<div class="r"><span>${x("tax_n", { n: fmt(d.taxRate) })}</span><span>${money(d.tax)}</span></div>` : ""}
+      ${isQuote ? "" : `<div class="r"><span>${x("total")}</span><span>${money(d.fee)}</span></div>
+      <div class="r"><span>${x("paid")}</span><span>${money(d.paid)}</span></div>`}
       <div class="r big"><span>${dueLabel}</span><span>${money(d.owed)}</span></div>
     </section>`;
   const due = `<div class="d-due"><span>${dueLabel}</span><b>${money(d.owed)}</b>${d.project.dueDate ? `<span>${x("f_dueDate")}: ${longDate(d.project.dueDate, lang)}</span>` : ""}</div>`;
@@ -97,7 +107,8 @@ export function renderDoc(d, { tl, lang = d.lang, logoUrl = "" }) {
       <div><span class="line"></span><b>${x("sign_for", { who: iso(who) })}</b><span class="d-sub">${x("doc_date")}: ____________</span></div>
       <div><span class="line"></span><b>${x(isQuote ? "sign_accept" : "sign_client")}</b><span class="d-sub">${x("doc_date")}: ____________</span></div>
     </section>`;
-  const foot = `<footer class="d-foot">${footer ? nl2br(footer) : x("thanks_note")}</footer>`;
+  const accepted = d.accepted ? `<div class="d-accepted"><span aria-hidden="true">✓</span><span>${x("accepted_by", { name: iso(d.accepted.by), date: longDate(d.accepted.at.slice(0, 10), lang) })}</span></div>` : "";
+  const foot = `${accepted}<footer class="d-foot">${footer ? nl2br(footer) : x("thanks_note")}</footer>`;
 
   /* ---------- layouts ---------- */
   let body;

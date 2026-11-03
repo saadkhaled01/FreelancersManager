@@ -1,5 +1,5 @@
 import { STR, TEMPLATES, TYPES } from "./i18n.js";
-import { docData, sampleDoc, normalizeBrand, BRAND_COLORS, LAYOUTS, FONTS, ACCENTS } from "./doc-data.js";
+import { docData, sampleDoc, normalizeBrand, itemTotals, BRAND_COLORS, LAYOUTS, FONTS, ACCENTS } from "./doc-data.js";
 import { renderDoc } from "./doc-render.js";
 
 /* ============ utilities ============ */
@@ -87,6 +87,7 @@ const C = id => D().clients.find(c => c.id === id);
 const clientOf = p => (p.clientId ? C(p.clientId) : null);
 const paysOf = id => D().payments.filter(x => x.projectId === id);
 const delsOf = id => D().deliverables.filter(x => x.projectId === id);
+const itemsOf = id => (D().items || []).filter(x => x.projectId === id);
 function payState(x) {
   if (x.paidAt) return "paid";
   if (x.dueDate && x.dueDate < today()) return "overdue";
@@ -554,7 +555,7 @@ function projectView(id) {
     <section class="panel">
       <div class="panel-head">
         <div style="display:flex; flex-direction:column; gap:4px; min-width:0">
-          <div class="r1"><span class="code">${esc(p.code)}</span>${stBadge(p)}${late ? badge("bad", relDue(p.dueDate)) : ""}${overRev(p) ? badge("warn", t("over_rev")) : ""}</div>
+          <div class="r1"><span class="code">${esc(p.code)}</span>${stBadge(p)}${late ? badge("bad", relDue(p.dueDate)) : ""}${overRev(p) ? badge("warn", t("over_rev")) : ""}${p.acceptedAt ? badge("good", t("accepted_badge", { name: p.acceptedBy })) : ""}</div>
           <h1 style="font-size:24px">${esc(p.title)}</h1>
           ${c ? `<div class="sub"><a href="#client/${c.id}">${esc(c.name)}</a>${c.phone ? `<span>·</span><span class="mono ltr">${esc(c.phone)}</span>` : ""}</div>` : `<div class="sub">${t("no_client")}</div>`}
         </div>
@@ -575,6 +576,7 @@ function projectView(id) {
     </section>
     <div class="split">
       <div class="stack">
+        ${itemsPanel(p)}
         <section class="panel">
           <div class="panel-head"><h2>${t("deliverables")}</h2>${dels.length ? `<span class="hint">${t("dels_done", { n: dels.filter(d => d.done).length, of: dels.length })}</span>` : ""}</div>
           ${delRows || `<span class="hint">${t("no_dels")}</span>`}
@@ -607,6 +609,50 @@ function projectView(id) {
     </div>`;
 }
 
+/* Line items: with any, the fee is their total after discount and tax (the server calculates it too). */
+function itemsPanel(p) {
+  const its = itemsOf(p.id), cur = t("cur_" + D().me.currency);
+  const sums = itemTotals(its, p.discount, p.taxRate);
+  const rows = its.map(i => `<div class="ri">
+      <div class="txt"><b>${esc(i.label)}</b><span class="hint mono">${fmtNum(i.qty)} × ${money(i.unitPrice)}</span></div>
+      <span class="amt">${money(i.qty * i.unitPrice)}</span>
+      <div class="acts"><button class="btn btn-ghost btn-sm" data-act="editItem" data-id="${i.id}">${t("edit")}</button><button class="x" data-act="delItem" data-id="${i.id}" aria-label="${t("delete")}">✕</button></div></div>`).join("");
+  return `<section class="panel">
+    <div class="panel-head"><h2>${t("items")}</h2>${its.length ? `<span class="hint">${t("fee_from_items")}</span>` : ""}</div>
+    ${rows ? `<div class="rows">${rows}</div>` : `<span class="hint">${t("items_hint")}</span>`}
+    <form data-form="item" data-id="${p.id}" class="item-add">
+      <input class="input" name="label" required maxlength="200" placeholder="${t("item_label_ph")}" aria-label="${t("f_label")}">
+      <input class="input mono" name="qty" type="number" min="0.001" step="any" value="1" aria-label="${t("qty")}" title="${t("qty")}">
+      <input class="input mono" name="unitPrice" type="number" min="0" step="0.01" inputmode="decimal" required placeholder="${t("unit_price")}" aria-label="${t("unit_price")} (${esc(cur)})">
+      <button class="btn btn-ghost" type="submit">${t("add_item")}</button>
+    </form>
+    ${its.length ? `<form data-form="pricing" data-id="${p.id}" class="grid3" style="align-items:end">
+        <div class="field"><label for="prDisc">${t("discount")} (${esc(cur)})</label><input id="prDisc" class="mono" name="discount" type="number" min="0" step="0.01" value="${p.discount || 0}"></div>
+        <div class="field"><label for="prTax">${t("f_taxRate")}</label><input id="prTax" class="mono" name="taxRate" type="number" min="0" max="100" step="0.01" value="${p.taxRate || 0}"></div>
+        <div><button class="btn btn-ghost" type="submit">${t("save")}</button></div>
+      </form>
+      <div class="totals">
+        <div class="row"><span>${t("subtotal")}</span><span class="v">${money(sums.subtotal)}</span></div>
+        ${sums.discount ? `<div class="row"><span>${t("discount")}</span><span class="v">− ${money(sums.discount)}</span></div>` : ""}
+        ${sums.tax ? `<div class="row"><span>${t("tax_n", { n: fmtNum(sums.taxRate) })}</span><span class="v">${money(sums.tax)}</span></div>` : ""}
+        <div class="row big"><span>${t("total")}</span><span class="v">${money(sums.total)}</span></div>
+      </div>` : ""}
+  </section>`;
+}
+
+function itemForm(id) {
+  const i = D().items.find(x => x.id === id);
+  openModal(`${mhead(t("edit_item"))}
+    <form data-form="itemEdit" data-id="${i.id}">
+      <div class="field req"><label for="iLabel">${t("f_label")}</label><input id="iLabel" name="label" required maxlength="200" value="${esc(i.label)}"></div>
+      <div class="grid2">
+        <div class="field req"><label for="iQty">${t("qty")}</label><input id="iQty" class="mono" name="qty" type="number" min="0.001" step="any" required value="${i.qty}"></div>
+        <div class="field req"><label for="iPrice">${t("unit_price")}</label><input id="iPrice" class="mono" name="unitPrice" type="number" min="0" step="0.01" required value="${i.unitPrice}"></div>
+      </div>
+      ${mfoot(t("save"), `<button class="btn btn-danger" type="button" data-act="delItem" data-id="${i.id}" style="margin-inline-start:auto">${t("delete")}</button>`)}
+    </form>`);
+}
+
 function activityText(a) {
   const d = a.data || {};
   switch (a.kind) {
@@ -618,6 +664,7 @@ function activityText(a) {
     case "done": return t("a_done", { label: esc(d.label) });
     case "note": return esc(d.text);
     case "sent": return t("a_sent", { kind: t(d.kind || "invoice"), to: esc(d.to || "") });
+    case "accepted": return `<b>${t("a_accepted", { name: esc(d.name || "") })}</b>`;
     default: return esc(a.kind);
   }
 }
@@ -822,6 +869,7 @@ function settingsView() {
               <div class="field"><label for="sCur">${t("f_currency")}</label><select id="sCur" name="currency">${["EGP", "USD", "EUR", "SAR", "AED", "KWD", "QAR", "GBP"].map(c => `<option value="${c}" ${me.currency === c ? "selected" : ""}>${c}</option>`).join("")}</select></div>
               <div class="field"><label for="sDep">${t("f_depositPct")}</label><input id="sDep" name="depositPct" type="number" min="0" max="100" value="${me.depositPct}"></div>
               <div class="field"><label for="sRev">${t("f_revisionsAllowed")}</label><input id="sRev" name="revisions" type="number" min="0" max="50" value="${me.revisions}"></div>
+              <div class="field"><label for="sTax">${t("f_taxRate")}</label><input id="sTax" name="taxRate" type="number" min="0" max="100" step="0.01" value="${me.taxRate || 0}"><span class="hint">${t("tax_default_hint")}</span></div>
             </div>
             <div><button class="btn btn-primary" type="submit">${t("save")}</button></div>
           </form></section>
@@ -874,7 +922,7 @@ function calendarPanel() {
 
 /* ============ invoice / quote ============ */
 /* ============ branded documents ============ */
-const docFor = p => docData({ project: p, client: clientOf(p), payments: paysOf(p.id), deliverables: delsOf(p.id), me: D().me, today: today() });
+const docFor = p => docData({ project: p, client: clientOf(p), payments: paysOf(p.id), deliverables: delsOf(p.id), items: itemsOf(p.id), me: D().me, today: today() });
 const logoUrl = () => (D().me.logoVersion ? `/api/me/logo?v=${D().me.logoVersion}` : "");
 const shareUrl = (p, lang) => `${location.origin}/d/${p.shareToken}?lang=${lang}`;
 const langSeg = (act, cur, extra = "") => `<div class="seg">${["ar", "en"].map(l => `<button type="button" data-act="${act}" data-v="${l}" ${extra} aria-pressed="${cur === l}">${l === "ar" ? "العربية" : "English"}</button>`).join("")}</div>`;
@@ -936,7 +984,7 @@ function previewDoc() {
   const me = { ...D().me };
   if (form) { const o = formObj(form); me.brand = brandFromForm(o); me.business = o.business; }
   const p = D().projects.filter(x => x.status !== "archived" && x.fee > 0).sort(byPriority)[0];
-  const d = p ? docData({ project: p, client: clientOf(p), payments: paysOf(p.id), deliverables: delsOf(p.id), me, today: today() }) : sampleDoc(me, L, today());
+  const d = p ? docData({ project: p, client: clientOf(p), payments: paysOf(p.id), deliverables: delsOf(p.id), items: itemsOf(p.id), me, today: today() }) : sampleDoc(me, L, today());
   return { d, L };
 }
 function stylePreviewHtml() {
@@ -1053,7 +1101,7 @@ function projectForm(id, { clientId } = {}) {
       </div>
       <div class="field"><label for="pFolder">${t("f_folderUrl")}</label><input id="pFolder" name="folderUrl" type="url" class="ltr" maxlength="1000" value="${esc(p?.folderUrl)}" placeholder="https://drive.google.com/drive/folders/…"></div>
       <div class="grid3">
-        <div class="field"><label for="pFee">${t("f_fee")} (${esc(t("cur_" + me.currency))})</label><input id="pFee" name="fee" type="number" min="0" step="0.01" inputmode="decimal" class="mono" value="${p ? p.fee : ""}"></div>
+        <div class="field"><label for="pFee">${t("f_fee")} (${esc(t("cur_" + me.currency))})</label><input id="pFee" name="fee" type="number" min="0" step="0.01" inputmode="decimal" class="mono" value="${p ? p.fee : ""}" ${p && itemsOf(p.id).length ? `readonly title="${t("fee_from_items")}"` : ""}></div>
         ${p ? "" : `<div class="field"><label for="pDep">${t("f_depositPct")}</label><input id="pDep" name="depositPct" type="number" min="0" max="100" value="${me.depositPct}"></div>`}
         <div class="field"><label for="pRev">${t("f_revisionsAllowed")}</label><input id="pRev" name="revisionsAllowed" type="number" min="0" max="50" value="${p ? p.revisionsAllowed : me.revisions}"></div>
       </div>
@@ -1255,6 +1303,8 @@ const ACTS = {
       <div class="modal-actions"><button class="btn btn-danger" type="submit">${t("delete_account")}</button><button class="btn btn-ghost" type="button" data-act="close">${t("cancel")}</button></div></form>`);
   },
   confirmYes: () => S.confirm?.(),
+  editItem: el => itemForm(num(el.dataset.id)),
+  delItem: async el => { if (await mutate("DELETE", `/items/${el.dataset.id}`, undefined, t("deleted"))) closeModal(); },
   sendDoc: el => sendDocModal(num(el.dataset.id)),
   sendLang: el => { S.invLang = el.dataset.v; sendDocModal(num(el.dataset.id)); if (S.route.name === "invoice") render(); },
   copyShare: async () => {
@@ -1383,6 +1433,17 @@ const FORMS = {
       $(`form[data-form="deliverable"] input[name="label"]`)?.focus();
     }
   },
+  async item(o, form) {
+    if (await mutate("POST", "/items", { projectId: num(form.dataset.id), label: o.label, qty: Number(o.qty || 1), unitPrice: Number(o.unitPrice || 0) })) {
+      $(`form[data-form="item"] input[name="label"]`)?.focus();
+    }
+  },
+  async itemEdit(o, form) {
+    if (await mutate("PATCH", `/items/${form.dataset.id}`, { label: o.label, qty: Number(o.qty), unitPrice: Number(o.unitPrice) }, t("saved"))) closeModal();
+  },
+  async pricing(o, form) {
+    await mutate("PATCH", `/projects/${form.dataset.id}`, { discount: Number(o.discount || 0), taxRate: Number(o.taxRate || 0) }, t("saved"));
+  },
   async note(o, form) {
     await mutate("POST", `/projects/${form.dataset.id}/notes`, { text: o.text });
   },
@@ -1395,7 +1456,7 @@ const FORMS = {
     if (j) closeModal();
   },
   async defaults(o) {
-    await mutate("PATCH", "/me", { currency: o.currency, depositPct: Number(o.depositPct), revisions: Number(o.revisions) }, t("saved"));
+    await mutate("PATCH", "/me", { currency: o.currency, depositPct: Number(o.depositPct), revisions: Number(o.revisions), taxRate: Number(o.taxRate || 0) }, t("saved"));
   },
   async templates(o, form) {
     const tpls = structuredClone(D().me.templates || {});

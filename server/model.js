@@ -38,6 +38,8 @@ export const SPECS = {
     sessionAt: { col: "session_at", type: "datetime" },
     folderUrl: { col: "folder_url", type: "url" },
     fee: { col: "fee", type: "money" },
+    discount: { col: "discount", type: "money" },
+    taxRate: { col: "tax_rate", type: "pct" },
     revisionsAllowed: { col: "revisions_allowed", type: "int", min: 0, max: 50 },
     revisionsUsed: { col: "revisions_used", type: "int", min: 0, max: 99 },
     links: { col: "links", type: "links" },
@@ -48,6 +50,12 @@ export const SPECS = {
     label: { col: "label", type: "str", max: 200, required: true },
     dueDate: { col: "due_date", type: "date" },
     done: { col: "done", type: "bool" },
+  },
+  items: {
+    projectId: { col: "project_id", type: "ref", table: "projects", required: true, fixed: true },
+    label: { col: "label", type: "str", max: 200, required: true },
+    qty: { col: "qty", type: "qty" },
+    unitPrice: { col: "unit_price", type: "money", required: true },
   },
   payments: {
     projectId: { col: "project_id", type: "ref", table: "projects", required: true, fixed: true },
@@ -70,6 +78,7 @@ export const ME_SPEC = {
   instapay: { col: "instapay", type: "str", max: 120 },
   vcash: { col: "vcash", type: "str", max: 40 },
   depositPct: { col: "deposit_pct", type: "int", min: 0, max: 100 },
+  taxRate: { col: "tax_rate", type: "pct" },
   revisions: { col: "revisions", type: "int", min: 0, max: 50 },
   templates: { col: "templates", type: "templates" },
   tz: { col: "tz", type: "tz" },
@@ -111,6 +120,16 @@ function coerce(spec, key, v) {
     case "money": {
       const n = typeof v === "string" ? Number(v) : v;
       if (typeof n !== "number" || !isFinite(n) || n < 0 || n > 1e10) throw bad(key);
+      return Math.round(n * 100) / 100;
+    }
+    case "qty": {
+      const n = typeof v === "string" ? Number(v) : v;
+      if (typeof n !== "number" || !isFinite(n) || n <= 0 || n > 1e6) throw bad(key);
+      return Math.round(n * 1000) / 1000;
+    }
+    case "pct": {
+      const n = typeof v === "string" ? Number(v) : v;
+      if (typeof n !== "number" || !isFinite(n) || n < 0 || n > 100) throw bad(key);
       return Math.round(n * 100) / 100;
     }
     case "int": {
@@ -211,7 +230,7 @@ export function publicMe(u) {
   return {
     id: u.id, email: u.email, name: u.name, business: u.business, phone: u.phone,
     lang: u.lang, currency: u.currency, instapay: u.instapay, vcash: u.vcash,
-    depositPct: u.deposit_pct, revisions: u.revisions, templates: JSON.parse(u.templates || "{}"),
+    depositPct: u.deposit_pct, revisions: u.revisions, taxRate: u.tax_rate || 0, templates: JSON.parse(u.templates || "{}"),
     calToken: u.cal_token || null, tz: u.tz || "",
     brand: JSON.parse(u.brand || "{}"),
     logoVersion: u.logo ? crypto.createHash("sha1").update(u.logo).digest("hex").slice(0, 10) : null,
@@ -239,6 +258,7 @@ export function snapshot(db, userId) {
     clients: all("SELECT * FROM clients WHERE user_id = ? ORDER BY name COLLATE NOCASE"),
     projects: all("SELECT * FROM projects WHERE user_id = ? ORDER BY id DESC"),
     deliverables: all("SELECT * FROM deliverables WHERE user_id = ? ORDER BY id"),
+    items: all("SELECT * FROM items WHERE user_id = ? ORDER BY project_id, id"),
     payments: all("SELECT * FROM payments WHERE user_id = ? ORDER BY due_date IS NULL, due_date, id"),
     activity: all("SELECT * FROM activity WHERE user_id = ? ORDER BY at DESC, id DESC LIMIT 2000"),
   };

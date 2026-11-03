@@ -290,6 +290,8 @@ form{display:flex; flex-direction:column; gap:12px; margin:0;}
 .x{border:none; background:none; color:var(--muted); cursor:pointer; font-size:15px; padding:2px 6px; border-radius:6px;}
 .x:hover{background:var(--surface-2); color:var(--danger);}
 .addrow{display:flex; gap:8px;}
+.item-add{display:grid; grid-template-columns:minmax(0,1fr) 70px 130px auto; gap:8px; flex-direction:row;}
+@media (max-width:560px){ .item-add{grid-template-columns:1fr 1fr;} .item-add .input:first-child{grid-column:1 / -1;} }
 .addrow .input{flex:1;}
 @media (max-width:560px){ .addrow{flex-wrap:wrap;} .addrow .input:first-child{flex-basis:100%;} .addrow input[type=date]{max-width:none !important;} }
 

@@ -48,6 +48,10 @@ Without `RESEND_API_KEY` and `MAIL_FROM`, reset emails are printed to the server
 
 Per instance, kept in memory: 10 failed logins per IP and email per 15 minutes, 5 new accounts per IP per hour, 10 reset requests per IP and 3 reset emails per address per hour. Reset links work once and expire after an hour; using one signs the account out everywhere else.
 
+## Clickable demo
+
+`npm run demo:build` writes a static copy of the app to `demo-build/` that runs with no server: `demo/mock-server.js` answers the app's API calls in the browser with the same rules, and keeps data in localStorage. It opens signed in as `demo@example.com` / `demo1234` with example projects. Shared links open an in-app client view; email, Google Calendar, downloads and printing are off.
+
 ## Deploy on Railway
 
 1. Create a service from this repo. Railway picks up `railway.json` (start command and `/healthz` health check).

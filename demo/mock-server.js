@@ -2,10 +2,10 @@
    It answers the app's /api calls with the same rules as server/app.js (project codes, deposit and balance,
    revision rounds, line items and tax, auto-done, sharing, quote acceptance, backups) and keeps everything in
    this browser's localStorage. Nothing leaves the browser: no email, Google Calendar or calendar feed. */
-import { docData, itemTotals, addPeriod, daysBetween, normalizeReminders, REPEATS } from "../app/doc-data.js";
+import { docData, itemTotals, addPeriod, daysBetween, normalizeReminders, REPEATS, EXPENSE_CATEGORIES, EXPENSE_REPEATS } from "../app/doc-data.js";
 import { EXAMPLES } from "../server/examples.js";
 
-const KEY = "fm_demo_v2";
+const KEY = "fm_demo_v3";
 const STATUSES = ["lead", "booked", "active", "with_client", "revising", "delivered", "archived"];
 const METHODS = ["", "instapay", "vcash", "cash", "bank", "other"];
 const r2 = n => Math.round(n * 100) / 100;
@@ -24,12 +24,13 @@ const bad = field => new ApiError(400, "invalid", { field });
 
 /* ---------- storage ---------- */
 function fresh() {
-  return { seq: 1, session: null, users: [], clients: [], projects: [], deliverables: [], payments: [], items: [], activity: [] };
+  return { seq: 1, session: null, users: [], clients: [], projects: [], deliverables: [], payments: [], items: [], expenses: [], activity: [] };
 }
 let db;
 function load() {
   try { db = JSON.parse(localStorage.getItem(KEY)) || null; } catch { db = null; }
   if (!db) { db = fresh(); seedDemoAccount(); save(); }
+  for (const [k, v] of Object.entries(fresh())) if (!(k in db)) db[k] = v; // data saved by an older demo
 }
 function save() { try { localStorage.setItem(KEY, JSON.stringify(db)); } catch { /* private window: lives for this visit only */ } }
 export function resetDemo() { try { localStorage.removeItem(KEY); } catch { /* ignore */ } }
@@ -97,6 +98,12 @@ const SPECS = {
     repeatNext: v => date(v, "repeatNext"), repeatUntil: v => date(v, "repeatUntil"),
   },
   deliverables: { projectId: req(v => Number(v)), label: req(v => str(v, 200, "label", true)), dueDate: v => date(v, "dueDate"), done: v => !!v },
+  expenses: {
+    projectId: v => (v == null || v === "" ? null : Number(v)), label: req(v => str(v, 160, "label", true)),
+    category: v => { if (!EXPENSE_CATEGORIES.includes(v)) throw bad("category"); return v; },
+    amount: req(v => amount(v, "amount")), spentOn: req(v => { const d = date(v, "spentOn"); if (!d) throw bad("spentOn"); return d; }),
+    note: v => str(v, 500, "note"), repeat: v => { if (!["", ...EXPENSE_REPEATS].includes(v || "")) throw bad("repeat"); return v || ""; },
+  },
   items: {
     projectId: req(v => Number(v)), label: req(v => str(v, 200, "label", true)),
     qty: v => { const n = Number(v); if (!isFinite(n) || n <= 0 || n > 1e6) throw bad("qty"); return Math.round(n * 1000) / 1000; },
@@ -124,6 +131,7 @@ function snapshot(uid) {
     deliverables: mine("deliverables", uid).map(strip),
     payments: mine("payments", uid).map(strip).sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999") || a.id - b.id),
     items: mine("items", uid).map(strip),
+    expenses: mine("expenses", uid).map(strip).sort((a, b) => b.spentOn.localeCompare(a.spentOn) || b.id - a.id),
     activity: mine("activity", uid).map(strip).sort((a, b) => b.at.localeCompare(a.at) || b.id - a.id).slice(0, 2000),
   };
 }
@@ -139,9 +147,11 @@ function createUser({ name, email, password, lang }) {
 }
 function seedExamples(uid, lang) {
   const ex = EXAMPLES[lang] || EXAMPLES.ar, t = now();
+  const pids = [];
   const cids = ex.clients.map(c => { const cid = id(); db.clients.push({ id: cid, userId: uid, ...c, email: "", notes: "", createdAt: t, updatedAt: t }); return cid; });
   for (const p of ex.projects) {
     const pid = id();
+    pids.push(pid);
     db.projects.push({
       id: pid, userId: uid, clientId: cids[p.c], code: nextCode(uid), title: p.title, type: p.type, status: p.status,
       startDate: p.start == null ? null : day(p.start), dueDate: day(p.due), fee: p.fee, discount: 0, taxRate: 0,
@@ -156,6 +166,9 @@ function seedExamples(uid, lang) {
     log(uid, pid, "created");
     if (p.link) log(uid, pid, "link", { url: p.link.url, label: p.link.label });
   }
+  for (const e of ex.expenses || [])
+    db.expenses.push({ id: id(), userId: uid, projectId: e.p == null ? null : pids[e.p], label: e.label, category: e.category, amount: e.amount,
+      spentOn: day(e.day), note: "", repeat: e.repeat || "", repeatNext: e.repeat ? nextExpense(day(e.day), e.repeat) : null, createdAt: t });
 }
 /* A ready-made account so there's something to explore straight away. */
 function seedDemoAccount() {
@@ -184,6 +197,12 @@ function createProject(uid, v, body) {
   log(uid, p.id, "created");
   return p.id;
 }
+function nextExpense(d, repeat) {
+  let next = addPeriod(d, repeat);
+  for (let i = 0; i < 520 && next <= today(); i++) next = addPeriod(next, repeat);
+  return next;
+}
+
 /* Recurring projects, as in server/app.js. */
 function firstRepeat(start, repeat) {
   let next = addPeriod(start || today(), repeat);
@@ -219,6 +238,11 @@ function catchUpRecurring() {
     for (let i = 0; i < 24 && next <= date && (!s.repeatUntil || next <= s.repeatUntil); i++) { repeatProject(s.userId, s.id, next); next = addPeriod(next, s.repeat); }
     s.repeatNext = next;
   }
+  for (const e of db.expenses.filter(x => x.repeat && x.repeatNext && x.repeatNext <= date)) {
+    let next = e.repeatNext;
+    for (let i = 0; i < 24 && next <= date; i++) { db.expenses.push({ ...e, id: id(), spentOn: next, repeat: "", repeatNext: null, createdAt: now() }); next = addPeriod(next, e.repeat); }
+    e.repeatNext = next;
+  }
 }
 
 function recalc(uid, pid) {
@@ -253,7 +277,7 @@ function settle(uid, pid) {
 }
 function checkRefs(table, uid, v) {
   if (table === "projects" && v.clientId != null) owned("clients", uid, v.clientId);
-  if (["deliverables", "payments", "items"].includes(table) && v.projectId != null) owned("projects", uid, v.projectId);
+  if (["deliverables", "payments", "items", "expenses"].includes(table) && v.projectId != null) owned("projects", uid, v.projectId);
 }
 function create(table, uid, body) {
   const v = pick(body, SPECS[table], false);
@@ -261,17 +285,24 @@ function create(table, uid, body) {
   const t = now();
   if (table === "clients") { const cid = id(); db.clients.push({ id: cid, userId: uid, phone: "", email: "", company: "", lang: "ar", notes: "", ...v, createdAt: t, updatedAt: t }); return cid; }
   if (table === "projects") return createProject(uid, v, body);
-  const base = { deliverables: { done: false, dueDate: null }, items: { qty: 1 }, payments: { kind: "extra", label: "", dueDate: null, paidAt: null, method: "", ref: "" } }[table];
+  const base = { deliverables: { done: false, dueDate: null }, items: { qty: 1 }, payments: { kind: "extra", label: "", dueDate: null, paidAt: null, method: "", ref: "" },
+    expenses: { projectId: null, category: "other", note: "", repeat: "", repeatNext: null } }[table];
+  if (table === "expenses" && v.repeat) v.repeatNext = nextExpense(v.spentOn, v.repeat);
   const rid = id();
   db[table].push({ id: rid, userId: uid, ...base, ...v, createdAt: t });
   if (table === "items") recalc(uid, v.projectId);
+  if (table === "expenses" && v.projectId) log(uid, v.projectId, "expense", { label: v.label, amount: v.amount });
   if (table === "payments" && v.paidAt) { log(uid, v.projectId, "paid", { amount: v.amount, method: v.method || "" }); settle(uid, v.projectId); }
   return rid;
 }
 function patch(table, uid, rid, body) {
   const old = owned(table, uid, rid);
   const v = pick(body, SPECS[table], true);
-  delete v.projectId;
+  if (table !== "expenses") delete v.projectId;
+  if (table === "expenses" && ("repeat" in v || "spentOn" in v)) {
+    const r = v.repeat ?? old.repeat;
+    v.repeatNext = r ? nextExpense(v.spentOn ?? old.spentOn, r) : null;
+  }
   checkRefs(table, uid, v);
   const t = now();
   if (table === "clients") v.updatedAt = t;
@@ -308,7 +339,10 @@ function remove(table, uid, rid) {
   const old = owned(table, uid, rid);
   if (table === "clients" && db.projects.some(p => p.clientId === old.id)) throw new ApiError(409, "client_has_projects");
   db[table] = db[table].filter(r => r !== old);
-  if (table === "projects") for (const k of ["deliverables", "payments", "items", "activity"]) db[k] = db[k].filter(r => r.projectId !== old.id);
+  if (table === "projects") {
+    for (const k of ["deliverables", "payments", "items", "activity"]) db[k] = db[k].filter(r => r.projectId !== old.id);
+    for (const e of db.expenses) if (e.projectId === old.id) e.projectId = null; // costs stay, as business expenses
+  }
   if (table === "items") recalc(uid, old.projectId);
 }
 function duplicate(uid, rid, body) {
@@ -336,7 +370,7 @@ function buildDoc(p) {
 function importAll(uid, body) {
   if (body?.app !== "freelancers-manager" || body.version !== 1) throw new ApiError(400, "bad_file");
   const list = k => (Array.isArray(body[k]) ? body[k] : []);
-  for (const k of ["activity", "items", "payments", "deliverables", "projects", "clients"]) db[k] = db[k].filter(r => r.userId !== uid);
+  for (const k of ["activity", "expenses", "items", "payments", "deliverables", "projects", "clients"]) db[k] = db[k].filter(r => r.userId !== uid);
   const u = db.users.find(x => x.id === uid);
   if (body.settings) for (const k of [...ME_FIELDS, "logo"]) if (k in body.settings) u[k] = body.settings[k];
   const cmap = new Map(), pmap = new Map(), t = now();
@@ -344,6 +378,7 @@ function importAll(uid, body) {
   for (const p of list("projects")) { const pid = id(); pmap.set(p.id, pid); db.projects.push({ ...p, id: pid, userId: uid, clientId: cmap.get(p.clientId) ?? null, shareToken: null, updatedAt: t }); }
   for (const k of ["deliverables", "payments", "items", "activity"])
     for (const r of list(k)) if (pmap.has(r.projectId)) db[k].push({ ...r, id: id(), userId: uid, projectId: pmap.get(r.projectId) });
+  for (const e of list("expenses")) db.expenses.push({ ...e, id: id(), userId: uid, projectId: pmap.get(e.projectId) ?? null });
 }
 
 /* ---------- router ---------- */
@@ -409,7 +444,7 @@ function route(method, path, body) {
     }
     if (!parts[1] && method === "DELETE") {
       if (body.password !== me.pass) throw new ApiError(400, "wrong_password");
-      for (const k of ["activity", "items", "payments", "deliverables", "projects", "clients"]) db[k] = db[k].filter(r => r.userId !== uid);
+      for (const k of ["activity", "expenses", "items", "payments", "deliverables", "projects", "clients"]) db[k] = db[k].filter(r => r.userId !== uid);
       db.users = db.users.filter(u => u.id !== uid);
       db.session = null;
       return { ok: true };
@@ -426,7 +461,7 @@ function route(method, path, body) {
   }
   if (parts[0] === "export" && method === "GET") {
     const d = snapshot(uid), { email, id: _, calToken, logoVersion, google, mailReady, ...settings } = d.me;
-    return { app: "freelancers-manager", version: 1, exportedAt: now(), settings, clients: d.clients, projects: d.projects, deliverables: d.deliverables, payments: d.payments, items: d.items, activity: d.activity };
+    return { app: "freelancers-manager", version: 1, exportedAt: now(), settings, clients: d.clients, projects: d.projects, deliverables: d.deliverables, payments: d.payments, items: d.items, expenses: d.expenses, activity: d.activity };
   }
   if (parts[0] === "import" && method === "POST") { importAll(uid, body); return reply(); }
   if (parts[0] === "projects" && parts[2] === "notes" && method === "POST") {

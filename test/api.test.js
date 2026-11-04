@@ -588,3 +588,39 @@ test("payment reminders: heads-up, overdue cadence, limit, opt-out, summary", as
   const pay2 = (await a("GET", "/data")).body.data.payments.find(x => x.projectId === p2.body.id);
   assert.equal((await a("POST", `/payments/${pay2.id}/remind`, {})).body.error, "no_client_email");
 });
+
+test("expenses: project costs, business costs, repeats, privacy, backups", async () => {
+  const a = agent();
+  const s = await signup(a, "spend@example.com", { lang: "en", examples: true });
+  const uid = await meId(a);
+  assert.equal(s.body.data.expenses.length, 5, "examples include expenses");
+  assert.ok(s.body.data.expenses.some(e => e.repeat === "monthly" && e.repeatNext > "2026-11-04"));
+  const p = await a("POST", "/projects", { title: "Shoot", status: "active", fee: 1000 });
+  const e = await a("POST", "/expenses", { projectId: p.body.id, label: "Drone rental", category: "equipment", amount: 250, spentOn: "2026-11-02" });
+  assert.equal(e.status, 200);
+  assert.equal(e.body.data.expenses.find(x => x.id === e.body.id).projectId, p.body.id);
+  assert.ok(e.body.data.activity.some(x => x.kind === "expense" && x.data.label === "Drone rental"));
+  assert.equal((await a("POST", "/expenses", { label: "No date", amount: 5 })).body.field, "spentOn");
+  assert.equal((await a("POST", "/expenses", { label: "Bad", amount: 5, spentOn: "2026-11-01", category: "yachts" })).status, 400);
+  // A monthly subscription gets a copy each month from the daily job.
+  const sub = await a("POST", "/expenses", { label: "Music library", category: "software", amount: 15, spentOn: "2026-10-05", repeat: "monthly" });
+  assert.equal(sub.body.data.expenses.find(x => x.id === sub.body.id).repeatNext, "2026-11-05");
+  const r = await runDay(uid, "2027-02-06T10:00:00Z");
+  assert.ok(r[uid].expenses.length >= 4, "Nov to Feb copies");
+  let data = (await a("GET", "/data")).body.data;
+  assert.deepEqual(data.expenses.filter(x => x.label === "Music library" && !x.repeat).map(x => x.spentOn).sort(), ["2026-11-05", "2026-12-05", "2027-01-05", "2027-02-05"]);
+  assert.equal(data.expenses.find(x => x.id === sub.body.id).repeatNext, "2027-03-05");
+  // Costs never reach the client's document.
+  const token = (await a("POST", `/projects/${p.body.id}/share`, {})).body.data.projects.find(x => x.id === p.body.id).shareToken;
+  const doc = await (await fetch(`${base}/api/public/doc/${token}`)).text();
+  assert.ok(!doc.includes("Drone rental"));
+  // Deleting a project keeps its expenses as business costs.
+  data = (await a("DELETE", `/projects/${p.body.id}`)).body.data;
+  assert.equal(data.expenses.find(x => x.id === e.body.id).projectId, null);
+  // Other users can't see or attach to them; backups carry them.
+  const b = agent(); await signup(b, "spend-b@example.com");
+  assert.equal((await b("PATCH", `/expenses/${e.body.id}`, { amount: 1 })).status, 404);
+  const ex = await a("GET", "/export");
+  const imp = await b("POST", "/import", ex.body);
+  assert.equal(imp.body.data.expenses.length, ex.body.expenses.length);
+});

@@ -153,6 +153,20 @@ const MIGRATIONS = [
   "ALTER TABLE projects ADD COLUMN repeat_next TEXT",
   "ALTER TABLE projects ADD COLUMN repeat_until TEXT",
   "ALTER TABLE projects ADD COLUMN series_id INTEGER",
+  `CREATE TABLE IF NOT EXISTS expenses(
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+    label TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT 'other',
+    amount REAL NOT NULL,
+    spent_on TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    repeat TEXT NOT NULL DEFAULT '',
+    repeat_next TEXT,
+    created_at TEXT NOT NULL
+  )`,
+  "CREATE INDEX IF NOT EXISTS expenses_user ON expenses(user_id, spent_on)",
 ];
 
 export function openDb(file) {

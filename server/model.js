@@ -7,7 +7,7 @@ export const PAY_KINDS = ["deposit", "balance", "extra"];
 export const CURRENCIES = ["EGP", "USD", "EUR", "SAR", "AED", "KWD", "QAR", "GBP"];
 export const LANGS = ["ar", "en"];
 export { LAYOUTS, FONTS, ACCENTS } from "../app/doc-data.js";
-import { LAYOUTS, FONTS, ACCENTS, REPEATS, normalizeReminders } from "../app/doc-data.js";
+import { LAYOUTS, FONTS, ACCENTS, REPEATS, EXPENSE_CATEGORIES, EXPENSE_REPEATS, normalizeReminders } from "../app/doc-data.js";
 export const TEMPLATE_KINDS = ["quote", "delivery", "reminder", "thanks", "document"];
 
 export class HttpError extends Error {
@@ -54,6 +54,15 @@ export const SPECS = {
     label: { col: "label", type: "str", max: 200, required: true },
     dueDate: { col: "due_date", type: "date" },
     done: { col: "done", type: "bool" },
+  },
+  expenses: {
+    projectId: { col: "project_id", type: "ref", table: "projects", nullable: true },
+    label: { col: "label", type: "str", max: 160, required: true },
+    category: { col: "category", type: "enum", values: EXPENSE_CATEGORIES },
+    amount: { col: "amount", type: "money", required: true },
+    spentOn: { col: "spent_on", type: "date", required: true },
+    note: { col: "note", type: "str", max: 500 },
+    repeat: { col: "repeat", type: "enum", values: ["", ...EXPENSE_REPEATS] },
   },
   items: {
     projectId: { col: "project_id", type: "ref", table: "projects", required: true, fixed: true },
@@ -108,7 +117,7 @@ function coerce(spec, key, v) {
       if (!spec.values.includes(v)) throw bad(key);
       return v;
     case "date":
-      if (v == null || v === "") return null;
+      if (v == null || v === "") { if (spec.required) throw bad(key); return null; }
       if (typeof v !== "string" || !DATE_RE.test(v) || isNaN(Date.parse(v))) throw bad(key);
       return v;
     case "datetime":
@@ -271,6 +280,7 @@ export function snapshot(db, userId) {
     projects: all("SELECT * FROM projects WHERE user_id = ? ORDER BY id DESC"),
     deliverables: all("SELECT * FROM deliverables WHERE user_id = ? ORDER BY id"),
     items: all("SELECT * FROM items WHERE user_id = ? ORDER BY project_id, id"),
+    expenses: all("SELECT * FROM expenses WHERE user_id = ? ORDER BY spent_on DESC, id DESC"),
     payments: all("SELECT * FROM payments WHERE user_id = ? ORDER BY due_date IS NULL, due_date, id"),
     activity: all("SELECT * FROM activity WHERE user_id = ? ORDER BY at DESC, id DESC LIMIT 2000"),
   };

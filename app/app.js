@@ -1,5 +1,5 @@
 import { STR, TEMPLATES, TYPES } from "./i18n.js";
-import { docData, sampleDoc, normalizeBrand, itemTotals, fillText, normalizeReminders, BRAND_COLORS, LAYOUTS, FONTS, ACCENTS, REPEATS } from "./doc-data.js";
+import { docData, sampleDoc, normalizeBrand, itemTotals, fillText, normalizeReminders, BRAND_COLORS, LAYOUTS, FONTS, ACCENTS, REPEATS, EXPENSE_CATEGORIES, EXPENSE_REPEATS } from "./doc-data.js";
 import { renderDoc } from "./doc-render.js";
 
 /* ============ utilities ============ */
@@ -29,7 +29,7 @@ const S = {
   lang: store.get("fm_lang") || ((navigator.language || "").startsWith("ar") ? "ar" : "en"),
   route: { name: "today", id: null },
   filter: "all", q: "", clientQ: "",
-  money: { month: today().slice(0, 7), state: "all", method: "all" },
+  money: { month: today().slice(0, 7), period: "month", state: "all", method: "all", cat: "all" },
   calMonth: today().slice(0, 7),
   authTab: "signup", forgotSent: false, offline: false, tplKind: "quote", invLang: null,
   confirm: null, importData: null,
@@ -88,6 +88,7 @@ const clientOf = p => (p.clientId ? C(p.clientId) : null);
 const paysOf = id => D().payments.filter(x => x.projectId === id);
 const delsOf = id => D().deliverables.filter(x => x.projectId === id);
 const itemsOf = id => (D().items || []).filter(x => x.projectId === id);
+const expensesOf = id => (D().expenses || []).filter(x => x.projectId === id);
 function payState(x) {
   if (x.paidAt) return "paid";
   if (x.dueDate && x.dueDate < today()) return "overdue";
@@ -300,7 +301,7 @@ function render() {
 
 /* ============ small components ============ */
 const badge = (c, txt) => `<span class="badge ${c}">${esc(txt)}</span>`;
-const kpi = (n, l, c = "") => `<div class="kpi ${c}"><div class="n">${n}</div><div class="l">${esc(l)}</div></div>`;
+const kpi = (n, l, c = "", hint = "") => `<div class="kpi ${c}"><div class="n">${n}</div><div class="l">${esc(l)}</div>${hint ? `<div class="hint">${hint}</div>` : ""}</div>`;
 const empty = (title, hint, btn = "") => `<div class="empty"><b>${esc(title)}</b>${esc(hint)}${btn ? `<div>${btn}</div>` : ""}</div>`;
 const stBadge = p => badge(STATUS[p.status].c, t("st_" + p.status));
 const payBadge = x => {
@@ -614,8 +615,48 @@ function projectView(id) {
           </div>
           ${m.unscheduled > 0 ? `<div class="banner warn"><span>${t("unscheduled", { amt: money(m.unscheduled) })}</span><button class="btn btn-ghost btn-sm" data-act="newPay" data-id="${p.id}" data-amount="${m.unscheduled}">${t("schedule_it")}</button></div>` : ""}
         </section>
+        ${costsPanel(p, m)}
       </div>
     </div>`;
+}
+
+/* Costs & profit for one project: only the freelancer sees this, never the client. */
+function costsPanel(p, m) {
+  const exps = expensesOf(p.id).sort((a, b) => b.spentOn.localeCompare(a.spentOn));
+  const costs = sum(exps), profit = p.fee - costs;
+  return `<section class="panel">
+    <div class="panel-head"><h2>${t("costs_profit")}</h2><button class="btn btn-ghost btn-sm" data-act="newExpense" data-project="${p.id}">+ ${t("add_expense")}</button></div>
+    ${exps.length ? `<div class="rows">${exps.map(e => expenseRow(e, { inProject: true })).join("")}</div>` : `<span class="hint">${t("no_project_costs")}</span>`}
+    <div class="totals">
+      <div class="row"><span>${t("f_fee")}</span><span class="v">${money(p.fee)}</span></div>
+      <div class="row"><span>${t("costs")}</span><span class="v">− ${money(costs)}</span></div>
+      <div class="row big ${profit < 0 ? "bad" : "good"}"><span>${t("k_profit")}${p.fee > 0 ? ` <small class="hint">(${t("k_margin", { n: Math.round(profit / p.fee * 100) })})</small>` : ""}</span><span class="v">${money(profit)}</span></div>
+      ${p.status !== "lead" ? `<div class="row"><span>${t("cash_profit")}</span><span class="v">${money(m.paid - costs)}</span></div>` : ""}
+    </div>
+    <span class="hint">${t("costs_private")}</span>
+  </section>`;
+}
+
+function expenseForm(id, { projectId } = {}) {
+  const e = id ? D().expenses.find(x => x.id === id) : null;
+  const pid = e ? e.projectId : projectId ?? null;
+  const projects = D().projects.filter(x => x.status !== "archived" || x.id === pid).sort((a, b) => b.id - a.id);
+  openModal(`${mhead(e ? t("edit_expense") : t("add_expense"))}
+    <form data-form="expense" data-id="${e?.id || ""}">
+      <div class="field req"><label for="xLabel">${t("f_label")}</label><input id="xLabel" name="label" required maxlength="160" value="${esc(e?.label)}" placeholder="${t("expense_ph")}"></div>
+      <div class="grid2">
+        <div class="field req"><label for="xAmt">${t("amount")} (${esc(t("cur_" + D().me.currency))})</label><input id="xAmt" class="mono" name="amount" type="number" min="0" step="0.01" inputmode="decimal" required value="${e ? e.amount : ""}"></div>
+        <div class="field req"><label for="xDate">${t("f_spentOn")}</label><input id="xDate" name="spentOn" type="date" required value="${e?.spentOn || today()}"></div>
+      </div>
+      <div class="grid2">
+        <div class="field"><label for="xCat">${t("f_category")}</label><select id="xCat" name="category">${EXPENSE_CATEGORIES.map(c => `<option value="${c}" ${(e?.category || "other") === c ? "selected" : ""}>${catLabel(c)}</option>`).join("")}</select></div>
+        <div class="field"><label for="xProj">${t("project")}</label><select id="xProj" name="projectId"><option value="">${t("business_cost")}</option>${projects.map(x => `<option value="${x.id}" ${pid === x.id ? "selected" : ""}>${esc(x.code)} · ${esc(x.title)}</option>`).join("")}</select></div>
+      </div>
+      <div class="field"><label for="xRepeat">${t("f_repeat")}</label><select id="xRepeat" name="repeat"><option value="">${t("repeat_none")}</option>${EXPENSE_REPEATS.map(r => `<option value="${r}" ${e?.repeat === r ? "selected" : ""}>${t("erepeat_" + r)}</option>`).join("")}</select>
+        <span class="hint">${t("expense_repeat_hint")}</span></div>
+      <div class="field"><label for="xNote">${t("f_notes")}</label><input id="xNote" name="note" maxlength="500" value="${esc(e?.note)}"></div>
+      ${mfoot(e ? t("save") : t("add_expense"), e ? `<button class="btn btn-danger" type="button" data-act="delExpense" data-id="${e.id}" style="margin-inline-start:auto">${t("delete")}</button>` : "")}
+    </form>`);
 }
 
 /* Line items: with any, the fee is their total after discount and tax (the server calculates it too). */
@@ -675,6 +716,7 @@ function activityText(a) {
     case "sent": return t("a_sent", { kind: t(d.kind || "invoice"), to: esc(d.to || "") });
     case "accepted": return `<b>${t("a_accepted", { name: esc(d.name || "") })}</b>`;
     case "reminder": return t(d.upcoming ? "a_reminder_soon" : d.auto ? "a_reminder_auto" : "a_reminder", { amt: money(d.amount || 0), to: esc(d.to || "") });
+    case "expense": return t("a_expense", { label: esc(d.label || ""), amt: money(d.amount || 0) });
     case "repeated": return t("a_repeated", { code: esc(d.code || ""), d: fdate(d.start) });
     default: return esc(a.kind);
   }
@@ -797,24 +839,40 @@ function shiftMonth(ym, n) {
   const d = new Date(y, m - 1 + n, 1);
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
 }
-function chart(month) {
-  const months = Array.from({ length: 6 }, (_, i) => shiftMonth(month, i - 5));
-  const vals = months.map(ym => sum(D().payments.filter(x => x.paidAt && x.paidAt.startsWith(ym))));
-  const max = Math.max(...vals, 1);
+/* Income (payments received) next to expenses, per month: the last 6 months, or the 12 months of the year. */
+function chart(months, current) {
+  const inc = months.map(ym => sum(D().payments.filter(x => x.paidAt && x.paidAt.startsWith(ym))));
+  const exp = months.map(ym => sum((D().expenses || []).filter(x => x.spentOn.startsWith(ym))));
+  const max = Math.max(...inc, ...exp, 1);
   const short = v => (v >= 10000 ? fmtNum(Math.round(v / 1000)) + "k" : fmtNum(v));
-  return `<div class="bars" role="img" aria-label="${t("chart_label")}: ${months.map((ym, i) => `${monthLabel(ym)} ${money(vals[i])}`).join(", ")}">
-    ${months.map((ym, i) => `<div class="col"><span class="v">${vals[i] ? short(vals[i]) : ""}</span><i class="b ${ym === month ? "cur" : ""}" style="height:calc((100% - 22px) * ${vals[i] / max})"></i></div>`).join("")}
+  const label = months.map((ym, i) => `${monthLabel(ym)}: ${t("k_received")} ${money(inc[i])}, ${t("k_expenses")} ${money(exp[i])}`).join("; ");
+  return `<div class="legend"><span class="lg"><i class="lg-inc"></i>${t("k_received")}</span><span class="lg"><i class="lg-exp"></i>${t("k_expenses")}</span></div>
+    <div class="bars" role="img" aria-label="${esc(label)}">
+    ${months.map((ym, i) => `<div class="col ${ym === current ? "cur" : ""}" title="${esc(monthLabel(ym))} · ${t("k_profit")} ${esc(money(inc[i] - exp[i]))}"><span class="v">${inc[i] ? short(inc[i]) : ""}</span>
+      <div class="pair"><i class="b" style="height:${inc[i] / max * 100}%"></i><i class="b exp" style="height:${exp[i] / max * 100}%"></i></div></div>`).join("")}
   </div><div class="bars-l">${months.map(ym => `<span>${esc(monthLabel(ym, S.lang, true))}</span>`).join("")}</div>`;
 }
+
+const catLabel = c => t("cat_" + c);
+function expenseRow(e, { inProject = false } = {}) {
+  const p = e.projectId ? P(e.projectId) : null;
+  const where = inProject ? "" : ` · ${p ? `<a href="#project/${p.id}">${esc(p.title)}</a>` : t("business_cost")}`;
+  return `<div class="ri"><div class="txt"><b>${esc(e.label)}</b><span class="hint">${catLabel(e.category)} · ${fdate(e.spentOn)}${where}${e.note ? ` · ${esc(e.note)}` : ""}</span></div>
+    ${e.repeat ? badge("acc", "↻ " + t("erepeat_" + e.repeat)) : ""}<span class="amt">${money(e.amount)}</span>
+    <button class="btn btn-ghost btn-sm" data-act="editExpense" data-id="${e.id}">${t("edit")}</button></div>`;
+}
+
 function moneyView() {
-  const M = S.money, ym = M.month;
+  const M = S.money, ym = M.month, year = M.period === "year";
+  const key = year ? ym.slice(0, 4) : ym;
+  const inRange = d => !!d && d.startsWith(key);
   const pays = D().payments.filter(x => P(x.projectId)?.status !== "lead");
-  const received = sum(pays.filter(x => x.paidAt?.startsWith(ym)));
-  const expected = sum(pays.filter(x => !x.paidAt && x.dueDate?.startsWith(ym)));
+  const received = sum(pays.filter(x => inRange(x.paidAt)));
+  const expected = sum(pays.filter(x => !x.paidAt && inRange(x.dueDate)));
+  const exps = (D().expenses || []).filter(x => inRange(x.spentOn));
+  const spent = sum(exps), profit = received - spent;
   const owed = sum(D().projects, p => projMoney(p).owed), overdue = sum(D().projects, p => projMoney(p).overdue);
-  let list = M.state === "overdue"
-    ? pays.filter(x => payState(x) === "overdue")
-    : pays.filter(x => (x.paidAt ? x.paidAt.startsWith(ym) : x.dueDate?.startsWith(ym)));
+  let list = M.state === "overdue" ? pays.filter(x => payState(x) === "overdue") : pays.filter(x => inRange(x.paidAt || x.dueDate));
   if (M.state === "paid") list = list.filter(x => x.paidAt);
   if (M.state === "due") list = list.filter(x => !x.paidAt);
   if (M.method !== "all") list = list.filter(x => x.method === M.method);
@@ -825,23 +883,38 @@ function moneyView() {
       <span class="amt">${money(x.amount)}</span>${payBadge(x)}
       ${x.paidAt ? "" : `<div class="acts">${waBtn(p.id, "reminder")}${canEmailReminder(x, p) ? remindBtn(x) : ""}<button class="btn btn-ghost btn-sm" data-act="markPaid" data-id="${x.id}">${t("mark_paid")}</button></div>`}</div>`;
   }).join("");
+  // Spending by category, biggest first.
+  const cats = EXPENSE_CATEGORIES.map(c => [c, sum(exps.filter(e => e.category === c))]).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
+  const catMax = Math.max(1, ...cats.map(([, v]) => v));
+  const shownExps = (M.cat === "all" ? exps : exps.filter(e => e.category === M.cat)).sort((a, b) => b.spentOn.localeCompare(a.spentOn) || b.id - a.id);
+  const months = year ? Array.from({ length: 12 }, (_, i) => `${key}-${pad(i + 1)}`) : Array.from({ length: 6 }, (_, i) => shiftMonth(ym, i - 5));
+  const step = year ? 12 : 1;
   return `
     <div class="toolbar"><h1>${t("nav_money")}</h1>
-      <div class="monthnav"><button class="icon-btn" data-act="month" data-v="-1" aria-label="${t("prev_month")}">${S.lang === "ar" ? "›" : "‹"}</button><b>${esc(monthLabel(ym))}</b><button class="icon-btn" data-act="month" data-v="1" aria-label="${t("next_month")}">${S.lang === "ar" ? "‹" : "›"}</button></div></div>
+      <div class="acts"><div class="seg">${["month", "year"].map(v => `<button type="button" data-act="moneyPeriod" data-v="${v}" aria-pressed="${M.period === v}">${t("period_" + v)}</button>`).join("")}</div>
+      <div class="monthnav"><button class="icon-btn" data-act="month" data-v="${-step}" aria-label="${t("prev_month")}">${S.lang === "ar" ? "›" : "‹"}</button><b>${esc(year ? key : monthLabel(ym))}</b><button class="icon-btn" data-act="month" data-v="${step}" aria-label="${t("next_month")}">${S.lang === "ar" ? "‹" : "›"}</button></div></div></div>
     <div class="kpis">
-      ${kpi(moneyHtml(received), t("k_received"), "good")}
-      ${kpi(moneyHtml(expected), t("k_expected"), expected ? "warn" : "")}
-      ${kpi(moneyHtml(owed), t("k_owed"))}
-      ${kpi(moneyHtml(overdue), t("k_overdue"), overdue ? "bad" : "")}
+      ${kpi(moneyHtml(received), t("k_received"), "good", expected ? t("k_expected_n", { amt: money(expected) }) : "")}
+      ${kpi(moneyHtml(spent), t("k_expenses"), spent ? "warn" : "")}
+      ${kpi(moneyHtml(profit), t("k_profit"), profit < 0 ? "bad" : profit > 0 ? "good" : "", received ? t("k_margin", { n: Math.round(profit / received * 100) }) : "")}
+      ${kpi(moneyHtml(owed), t("k_owed"), "", overdue ? t("k_overdue_n", { amt: money(overdue) }) : "")}
     </div>
-    <section class="panel"><div class="panel-head"><h2>${t("last6")}</h2><span class="hint">${t("received_per_month")}</span></div>${chart(ym)}</section>
-    <section class="panel">
-      <div class="panel-head"><h2>${t("payments")}</h2>
-        <div class="chips">${["all", "paid", "due", "overdue"].map(s => `<button class="chip" data-act="moneyState" data-v="${s}" aria-pressed="${M.state === s}">${t(s === "all" ? "f_all" : "ps_" + s)}</button>`).join("")}
-          <select class="input" id="mMethod" style="width:auto; padding-block:4px" aria-label="${t("f_method")}"><option value="all">${t("all_methods")}</option>${METHODS.map(m => `<option value="${m}" ${M.method === m ? "selected" : ""}>${t("m_" + m)}</option>`).join("")}</select></div></div>
-      ${M.state === "overdue" ? `<span class="hint">${t("overdue_any_month")}</span>` : ""}
-      ${rows ? `<div class="rows">${rows}</div>` : empty(t("no_payments_month"), t("no_payments_month_hint"))}
-    </section>`;
+    <section class="panel"><div class="panel-head"><h2>${year ? key : t("last6")}</h2><span class="hint">${t("income_vs_expenses")}</span></div>${chart(months, ym)}</section>
+    <div class="split">
+      <section class="panel">
+        <div class="panel-head"><h2>${t("payments")}</h2>
+          <div class="chips">${["all", "paid", "due", "overdue"].map(s => `<button class="chip" data-act="moneyState" data-v="${s}" aria-pressed="${M.state === s}">${t(s === "all" ? "f_all" : "ps_" + s)}</button>`).join("")}
+            <select class="input" id="mMethod" style="width:auto; padding-block:4px" aria-label="${t("f_method")}"><option value="all">${t("all_methods")}</option>${METHODS.map(m => `<option value="${m}" ${M.method === m ? "selected" : ""}>${t("m_" + m)}</option>`).join("")}</select></div></div>
+        ${M.state === "overdue" ? `<span class="hint">${t("overdue_any_month")}</span>` : ""}
+        ${rows ? `<div class="rows">${rows}</div>` : empty(t("no_payments_month"), t("no_payments_month_hint"))}
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h2>${t("expenses")}</h2><button class="btn btn-primary btn-sm" data-act="newExpense">+ ${t("add_expense")}</button></div>
+        ${cats.length ? `<div class="cats">${cats.map(([c, v]) => `<button type="button" class="catrow" data-act="moneyCat" data-v="${c}" aria-pressed="${M.cat === c}"><span>${catLabel(c)}</span><span class="cbar"><i style="width:${v / catMax * 100}%"></i></span><span class="mono">${money(v)}</span></button>`).join("")}</div>
+          ${M.cat !== "all" ? `<button class="linkish hint" data-act="moneyCat" data-v="all" style="align-self:flex-start">${t("all_categories")}</button>` : ""}` : ""}
+        ${shownExps.length ? `<div class="rows">${shownExps.map(e => expenseRow(e)).join("")}</div>` : empty(t("no_expenses"), t("no_expenses_hint"))}
+      </section>
+    </div>`;
 }
 
 /* ============ settings ============ */
@@ -1335,6 +1408,16 @@ const ACTS = {
       <div class="modal-actions"><button class="btn btn-danger" type="submit">${t("delete_account")}</button><button class="btn btn-ghost" type="button" data-act="close">${t("cancel")}</button></div></form>`);
   },
   confirmYes: () => S.confirm?.(),
+  moneyPeriod: el => { S.money.period = el.dataset.v; render(); },
+  moneyCat: el => { S.money.cat = S.money.cat === el.dataset.v ? "all" : el.dataset.v; render(); },
+  newExpense: el => expenseForm(null, { projectId: num(el.dataset.project) }),
+  editExpense: el => expenseForm(num(el.dataset.id)),
+  delExpense: el => {
+    const id = num(el.dataset.id);
+    confirmBox(t("confirm_del_expense"), t("delete"), async () => {
+      if (await mutate("DELETE", `/expenses/${id}`, undefined, t("deleted"))) closeModal();
+    });
+  },
   remind: el => mutate("POST", `/payments/${el.dataset.id}/remind`, {}, t("reminder_sent")),
   repeatNow: async el => {
     const j = await mutate("POST", `/projects/${el.dataset.id}/repeat-now`, {}, t("repeat_created"));
@@ -1486,6 +1569,11 @@ const FORMS = {
     await mutate("POST", `/projects/${form.dataset.id}/notes`, { text: o.text });
   },
   async profile(o) { await mutate("PATCH", "/me", o, t("saved")); },
+  async expense(o, form) {
+    const id = num(form.dataset.id);
+    const body = { label: o.label, amount: Number(o.amount), spentOn: o.spentOn, category: o.category, projectId: num(o.projectId), repeat: o.repeat || "", note: o.note };
+    if (await mutate(id ? "PATCH" : "POST", id ? `/expenses/${id}` : "/expenses", body, t(id ? "saved" : "expense_added"))) closeModal();
+  },
   async reminders(o) {
     const n = k => Number(o[k]);
     await mutate("PATCH", "/me", { reminders: { digest: !!o.digest, clients: !!o.clients, before: n("before"), after: n("after"), every: n("every"), max: n("max") } }, t("saved"));

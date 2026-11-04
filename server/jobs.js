@@ -60,7 +60,7 @@ export function createJobs({ db, mailer, appUrl, buildDoc, shareToken, repeatPro
   }
 
   async function runUser(u, date) {
-    const out = { created: [], sent: [], overdue: [], soon: [] };
+    const out = { created: [], sent: [], overdue: [], soon: [], expenses: [] };
 
     // Recurring projects: every cycle whose start date has come, up to the series' end date.
     const series = db.prepare("SELECT id, repeat, repeat_next, repeat_until FROM projects WHERE user_id = ? AND repeat != '' AND repeat_next IS NOT NULL AND repeat_next <= ?").all(u.id, date);
@@ -71,6 +71,18 @@ export function createJobs({ db, mailer, appUrl, buildDoc, shareToken, repeatPro
         next = addPeriod(next, s.repeat);
       }
       db.prepare("UPDATE projects SET repeat_next = ? WHERE id = ?").run(next, s.id);
+    }
+
+    // Repeating expenses (subscriptions, rent): add each copy whose date has come.
+    for (const e of db.prepare("SELECT * FROM expenses WHERE user_id = ? AND repeat != '' AND repeat_next IS NOT NULL AND repeat_next <= ?").all(u.id, date)) {
+      let next = e.repeat_next;
+      for (let i = 0; i < 24 && next <= date; i++) {
+        db.prepare("INSERT INTO expenses(user_id, project_id, label, category, amount, spent_on, note, repeat, created_at) VALUES(?,?,?,?,?,?,?,'',?)")
+          .run(u.id, e.project_id, e.label, e.category, e.amount, next, e.note, new Date().toISOString());
+        out.expenses.push(e.id);
+        next = addPeriod(next, e.repeat);
+      }
+      db.prepare("UPDATE expenses SET repeat_next = ? WHERE id = ?").run(next, e.id);
     }
 
     // Payment reminders.

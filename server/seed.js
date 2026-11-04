@@ -1,5 +1,6 @@
 import { insert, log, now, nextCode } from "./model.js";
 import { EXAMPLES } from "./examples.js";
+import { addPeriod } from "../app/doc-data.js";
 
 const day = n => {
   const d = new Date();
@@ -12,6 +13,7 @@ export function seedExamples(db, userId, lang) {
   const ex = EXAMPLES[lang] || EXAMPLES.ar;
   const t = now();
   const clientIds = ex.clients.map(c => insert(db, "clients", { ...c, user_id: userId, notes: "", email: "", created_at: t, updated_at: t }));
+  const projectIds = [];
   for (const p of ex.projects) {
     const statusAt = p.status === "lead" ? ago(4) : ago(2);
     const id = insert(db, "projects", {
@@ -29,7 +31,20 @@ export function seedExamples(db, userId, lang) {
       paid_at: null, method: "", ref: "", label: "", created_at: t });
     for (const [label, done] of p.deliverables)
       insert(db, "deliverables", { user_id: userId, project_id: id, label, done: done ? 1 : 0, due_date: null, created_at: t });
+    projectIds.push(id);
     log(db, userId, id, "created", {});
     if (p.link) log(db, userId, id, "link", { url: p.link.url, label: p.link.label });
   }
+  for (const e of ex.expenses || []) {
+    insert(db, "expenses", {
+      user_id: userId, project_id: e.p == null ? null : projectIds[e.p], label: e.label, category: e.category, amount: e.amount,
+      spent_on: day(e.day), note: "", repeat: e.repeat || "", repeat_next: e.repeat ? nextAfterToday(day(e.day), e.repeat) : null, created_at: t,
+    });
+  }
 }
+
+const nextAfterToday = (d, repeat) => {
+  let next = addPeriod(d, repeat);
+  while (next <= day(0)) next = addPeriod(next, repeat);
+  return next;
+};

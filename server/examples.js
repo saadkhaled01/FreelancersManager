@@ -20,6 +20,14 @@ export const EXAMPLES = {
       { c: 3, title: "Brand identity (example)", type: "Design", status: "lead", start: null, due: 21, fee: 6500, rev: [3, 0], paid: [false, false],
         deliverables: [] },
     ],
+    /* p: index into projects above, or null for a business expense. day: days from today. */
+    expenses: [
+      { p: 0, label: "إيجار عدسات وإضاءة", category: "equipment", amount: 1500, day: -10 },
+      { p: 0, label: "مونتير مساعد", category: "crew", amount: 2000, day: -4 },
+      { p: 3, label: "مواصلات يوم الفرح", category: "travel", amount: 350, day: -40 },
+      { p: null, label: "اشتراك Adobe Creative Cloud", category: "software", amount: 1200, day: -3, repeat: "monthly" },
+      { p: null, label: "إنترنت المكتب", category: "rent", amount: 600, day: -20, repeat: "monthly" },
+    ],
   },
   en: {
     clients: [
@@ -40,6 +48,13 @@ export const EXAMPLES = {
         deliverables: [["Feature film", true], ["One-minute highlight", true]] },
       { c: 3, title: "Café menu photos (example)", type: "Photo", status: "lead", start: null, due: 21, fee: 900, rev: [2, 0], paid: [false, false],
         deliverables: [] },
+    ],
+    expenses: [
+      { p: 0, label: "Lens and lighting rental", category: "equipment", amount: 300, day: -10 },
+      { p: 0, label: "Assistant editor", category: "crew", amount: 400, day: -4 },
+      { p: 3, label: "Travel to the venue", category: "travel", amount: 80, day: -40 },
+      { p: null, label: "Adobe Creative Cloud", category: "software", amount: 60, day: -3, repeat: "monthly" },
+      { p: null, label: "Studio internet", category: "rent", amount: 45, day: -20, repeat: "monthly" },
     ],
   },
 };

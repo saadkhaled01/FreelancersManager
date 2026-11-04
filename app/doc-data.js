@@ -19,13 +19,16 @@ export function fillText(tpl, vars) {
 
 /* Recurring projects: how far apart each cycle starts. Months keep the day, clamped to the month's last day. */
 export const REPEATS = ["weekly", "monthly", "quarterly"];
+/* Expenses: what a freelancer spends, per project or for the business as a whole. Never shown to clients. */
+export const EXPENSE_CATEGORIES = ["equipment", "software", "crew", "travel", "rent", "marketing", "fees", "other"];
+export const EXPENSE_REPEATS = ["monthly", "yearly"];
 export function addPeriod(date, repeat) {
   const [y, m, d] = date.split("-").map(Number);
   if (repeat === "weekly") {
     const t = new Date(Date.UTC(y, m - 1, d + 7));
     return t.toISOString().slice(0, 10);
   }
-  const months = repeat === "quarterly" ? 3 : 1;
+  const months = { quarterly: 3, yearly: 12 }[repeat] || 1;
   const ty = y + Math.floor((m - 1 + months) / 12), tm = (m - 1 + months) % 12;
   const last = new Date(Date.UTC(ty, tm + 1, 0)).getUTCDate();
   return `${ty}-${String(tm + 1).padStart(2, "0")}-${String(Math.min(d, last)).padStart(2, "0")}`;

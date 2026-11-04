@@ -171,7 +171,7 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
         if (!auth.checkPassword(String(body.password ?? ""), u.pass_hash)) throw new HttpError(400, "wrong_password");
         if (google.available) await google.disconnect(userId);
         tx(db, () => {
-          for (const t of ["activity", "items", "payments", "deliverables", "projects", "clients", "sessions"])
+          for (const t of ["activity", "expenses", "items", "payments", "deliverables", "projects", "clients", "sessions"])
             db.prepare(`DELETE FROM ${t} WHERE user_id = ?`).run(userId);
           db.prepare("DELETE FROM users WHERE id = ?").run(userId);
         });
@@ -187,7 +187,7 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
       res.setHeader("Content-Disposition", `attachment; filename="freelancers-manager-${today()}.json"`);
       return send(res, 200, {
         app: "freelancers-manager", version: 1, exportedAt: now(), settings,
-        clients: d.clients, projects: d.projects, deliverables: d.deliverables, payments: d.payments, items: d.items, activity: d.activity,
+        clients: d.clients, projects: d.projects, deliverables: d.deliverables, payments: d.payments, items: d.items, expenses: d.expenses, activity: d.activity,
       });
     }
     if (parts[0] === "import" && method === "POST") {
@@ -428,7 +428,7 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
   /* ---------- records ---------- */
   function checkRefs(table, userId, values) {
     if (table === "projects" && values.client_id != null) owned(db, "clients", userId, values.client_id);
-    if (["deliverables", "payments", "items"].includes(table) && values.project_id != null) owned(db, "projects", userId, values.project_id);
+    if (["deliverables", "payments", "items", "expenses"].includes(table) && values.project_id != null) owned(db, "projects", userId, values.project_id);
   }
 
   function create(table, userId, body) {
@@ -437,8 +437,10 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
     const t = now();
     if (table === "clients") return insert(db, table, { ...values, user_id: userId, created_at: t, updated_at: t });
     if (table === "projects") return createProject(userId, values, body, t);
+    if (table === "expenses" && values.repeat) values.repeat_next = nextExpense(values.spent_on, values.repeat);
     const id = insert(db, table, { ...values, user_id: userId, created_at: t });
     if (table === "items") recalc(userId, values.project_id);
+    if (table === "expenses" && values.project_id) log(db, userId, values.project_id, "expense", { label: values.label, amount: values.amount });
     if (table === "payments" && values.paid_at) {
       log(db, userId, values.project_id, "paid", { amount: values.amount, method: values.method || "" });
       settle(userId, values.project_id);
@@ -496,6 +498,10 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
     checkRefs(table, userId, values);
     const t = now();
     if (table === "clients") values.updated_at = t;
+    if (table === "expenses" && ("repeat" in values || "spent_on" in values)) {
+      const repeat = values.repeat ?? old.repeat;
+      values.repeat_next = repeat ? nextExpense(values.spent_on ?? old.spent_on, repeat) : null;
+    }
     if (table === "projects") {
       values.updated_at = t;
       if ("repeat" in values) {
@@ -530,6 +536,13 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
     }
     if (table === "payments") settle(userId, old.project_id);
     if (table === "projects" && values.status === "delivered") settle(userId, old.id);
+  }
+
+  /* A repeating expense's next copy: one period after it, moved forward until it's after today. */
+  function nextExpense(spentOn, repeat) {
+    let next = addPeriod(spentOn, repeat);
+    for (let i = 0; i < 520 && next <= today(); i++) next = addPeriod(next, repeat);
+    return next;
   }
 
   /* A series' next cycle: one period after its start, moved forward until it's after today. */
@@ -628,7 +641,7 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
     if (body?.app !== "freelancers-manager" || body.version !== 1) throw new HttpError(400, "bad_file");
     const list = k => (Array.isArray(body[k]) ? body[k] : []);
     tx(db, () => {
-      for (const t of ["activity", "items", "payments", "deliverables", "projects", "clients"])
+      for (const t of ["activity", "expenses", "items", "payments", "deliverables", "projects", "clients"])
         db.prepare(`DELETE FROM ${t} WHERE user_id = ?`).run(userId);
       if (body.settings) {
         update(db, "users", userId, validate(ME_SPEC, body.settings, { partial: true }));
@@ -647,6 +660,12 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
         projectIds.set(p.id, insert(db, "projects", {
           ...v, user_id: userId, code, status_at: str(p.statusAt) || t, created_at: str(p.createdAt) || t, updated_at: t,
         }));
+      }
+      for (const e of list("expenses")) {
+        const v = validate(SPECS.expenses, { ...e, projectId: null }, { partial: false });
+        v.project_id = projectIds.get(e.projectId) ?? null;
+        if (v.repeat) v.repeat_next = nextExpense(v.spent_on, v.repeat);
+        insert(db, "expenses", { ...v, user_id: userId, created_at: str(e.createdAt) || t });
       }
       for (const k of ["deliverables", "payments", "items"]) {
         for (const r of list(k)) {

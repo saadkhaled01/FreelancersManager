@@ -1,5 +1,5 @@
 import { STR, TEMPLATES, TYPES } from "./i18n.js";
-import { docData, sampleDoc, normalizeBrand, itemTotals, BRAND_COLORS, LAYOUTS, FONTS, ACCENTS } from "./doc-data.js";
+import { docData, sampleDoc, normalizeBrand, itemTotals, fillText, normalizeReminders, BRAND_COLORS, LAYOUTS, FONTS, ACCENTS, REPEATS } from "./doc-data.js";
 import { renderDoc } from "./doc-render.js";
 
 /* ============ utilities ============ */
@@ -174,11 +174,16 @@ function fillTemplate(kind, p, extra = {}) {
     doc: tl(lang, p.status === "lead" ? "quote" : "invoice"),
     total: money(p.status === "lead" ? p.fee : projMoney(p).owed, lang),
   };
-  return tpl.split("\n").filter(line => {
-    const keys = [...line.matchAll(/\{(\w+)\}/g)].map(m => m[1]);
-    return !keys.some(k => k in vars && !vars[k]);
-  }).join("\n").replace(/\{(\w+)\}/g, (m, k) => (k in vars ? vars[k] : m)).replace(/\n{3,}/g, "\n\n").trim();
+  return fillText(tpl, vars);
 }
+/* Email reminders need email set up on the server and the client's email address. */
+const canEmailReminder = (x, p) => D().me.mailReady && !x.paidAt && !!clientOf(p)?.email;
+function reminderNote(x) {
+  if (x.paidAt || !(x.remindersSent || x.beforeSent)) return "";
+  return x.remindersSent ? t("reminded_n", { n: x.remindersSent, d: fdate(x.lastReminder) }) : t("reminded_before");
+}
+const remindBtn = x => `<button class="btn btn-ghost btn-sm" data-act="remind" data-id="${x.id}">${t("email_reminder")}</button>`;
+
 function defaultKind(p) {
   if (p.status === "lead") return "quote";
   if (p.status === "with_client") return "delivery";
@@ -322,7 +327,7 @@ function prow(p) {
   const dels = delsOf(p.id);
   return `<article class="pr"><div class="stripe" style="background:${stripe}"></div>
     <div class="main">
-      <div class="r1"><span class="code">${esc(p.code)}</span><a class="who" href="#project/${p.id}">${c ? `<bdi>${esc(c.company || c.name)}</bdi> — ` : ""}<bdi>${esc(p.title)}</bdi></a>${p.type ? badge("muted", p.type) : ""}${overRev(p) ? badge("warn", t("over_rev")) : ""}</div>
+      <div class="r1"><span class="code">${esc(p.code)}</span><a class="who" href="#project/${p.id}">${c ? `<bdi>${esc(c.company || c.name)}</bdi> — ` : ""}<bdi>${esc(p.title)}</bdi></a>${p.type ? badge("muted", p.type) : ""}${p.repeat ? badge("acc", "↻ " + t("repeat_" + p.repeat)) : ""}${overRev(p) ? badge("warn", t("over_rev")) : ""}</div>
       <div class="meta">
         ${p.sessionAt ? `<span>${t("session")}: <b>${fsession(p.sessionAt)}</b></span>` : ""}
         <span>${t("due")}: <b dir="ltr">${p.dueDate ? fnum(p.dueDate) : "—"}</b></span>
@@ -431,9 +436,9 @@ function todayView() {
   const chaseRows = chase.map(x => {
     const p = P(x.projectId), c = clientOf(p), st = payState(x);
     return `<div class="ri"><span class="dot" style="background:${st === "overdue" ? "var(--danger)" : "var(--amber)"}"></span>
-      <div class="txt"><a href="#project/${p.id}">${esc(p.title)}</a><span class="hint">${c ? esc(c.name) + " · " : ""}${esc(payLabel(x))} · ${relDue(x.dueDate)}</span></div>
+      <div class="txt"><a href="#project/${p.id}">${esc(p.title)}</a><span class="hint">${c ? esc(c.name) + " · " : ""}${esc(payLabel(x))} · ${relDue(x.dueDate)}${reminderNote(x) ? " · " + reminderNote(x) : ""}</span></div>
       <span class="amt">${money(x.amount)}</span>
-      <div class="acts">${waBtn(p.id, "reminder")}<button class="btn btn-ghost btn-sm" data-act="markPaid" data-id="${x.id}">${t("mark_paid")}</button></div></div>`;
+      <div class="acts">${waBtn(p.id, "reminder")}${canEmailReminder(x, p) ? remindBtn(x) : ""}<button class="btn btn-ghost btn-sm" data-act="markPaid" data-id="${x.id}">${t("mark_paid")}</button></div></div>`;
   }).join("");
 
   const waitRows = waiting.map(p => {
@@ -543,9 +548,9 @@ function projectView(id) {
   const payRows = pays.map(x => `<div class="ri">
       <div class="txt"><b>${esc(payLabel(x))}</b><span class="hint">${x.paidAt
         ? `${t("paid_on", { d: fdate(x.paidAt) })}${x.method ? " · " + t("m_" + x.method) : ""}${x.ref ? ` · <span class="mono">${esc(x.ref)}</span>` : ""}`
-        : x.dueDate ? `${t("due")} ${fdate(x.dueDate)} · ${relDue(x.dueDate)}` : t("no_date")}</span></div>
+        : x.dueDate ? `${t("due")} ${fdate(x.dueDate)} · ${relDue(x.dueDate)}` : t("no_date")}${reminderNote(x) ? ` · ${reminderNote(x)}` : ""}</span></div>
       <span class="amt">${money(x.amount)}</span>${payBadge(x)}
-      <div class="acts">${x.paidAt ? "" : `<button class="btn btn-primary btn-sm" data-act="markPaid" data-id="${x.id}">${t("mark_paid")}</button>`}
+      <div class="acts">${x.paidAt ? "" : `<button class="btn btn-primary btn-sm" data-act="markPaid" data-id="${x.id}">${t("mark_paid")}</button>`}${canEmailReminder(x, p) ? remindBtn(x) : ""}
         <button class="btn btn-ghost btn-sm" data-act="editPay" data-id="${x.id}">${t("edit")}</button></div></div>`).join("");
 
   const feed = acts.map(a => `<div class="it ${a.kind === "note" ? "note" : ""}"><span class="when">${fdate(a.at.slice(0, 10), S.lang, { day: "numeric", month: "short" })}</span><div class="what">${activityText(a)}</div></div>`).join("");
@@ -568,6 +573,10 @@ function projectView(id) {
         ${p.sessionAt ? `<div class="fact"><span class="k">${t("session")}</span><span class="v">${fsession(p.sessionAt)}</span></div>` : ""}
         <div class="fact"><span class="k">${t("f_dueDate")}</span><span class="v">${fdate(p.dueDate)}</span>${p.dueDate && ACTIVE.includes(p.status) ? `<span class="hint">${relDue(p.dueDate)}</span>` : ""}</div>
         <div class="fact"><span class="k">${t("f_startDate")}</span><span class="v">${fdate(p.startDate)}</span></div>
+        ${p.repeat ? `<div class="fact"><span class="k">${t("f_repeat")}</span><span class="v">${t("repeat_" + p.repeat)}</span>
+          <span class="hint">${p.repeatUntil && p.repeatNext > p.repeatUntil ? t("repeat_ended", { d: fdate(p.repeatUntil) }) : t("repeat_next", { d: fdate(p.repeatNext) })}</span>
+          <button class="linkish hint" data-act="repeatNow" data-id="${p.id}" style="align-self:flex-start">${t("repeat_now")}</button></div>` : ""}
+        ${p.seriesId && P(p.seriesId) ? `<div class="fact"><span class="k">${t("series")}</span><a class="v" href="#project/${p.seriesId}">${esc(P(p.seriesId).code)}</a></div>` : ""}
         <div class="fact"><span class="k">${t("f_fee")}</span><span class="v mono">${money(p.fee)}</span></div>
         <div class="fact"><span class="k">${t("revisions")}</span><span class="v"><span class="stepper"><button data-act="rev" data-id="${p.id}" data-v="-1" aria-label="−">−</button><span dir="ltr">${p.revisionsUsed} / ${p.revisionsAllowed}</span><button data-act="rev" data-id="${p.id}" data-v="1" aria-label="+">+</button></span></span></div>
         ${p.type ? `<div class="fact"><span class="k">${t("f_type")}</span><span class="v">${esc(p.type)}</span></div>` : ""}
@@ -656,7 +665,7 @@ function itemForm(id) {
 function activityText(a) {
   const d = a.data || {};
   switch (a.kind) {
-    case "created": return t("a_created");
+    case "created": return d.from ? t("a_created_from", { code: esc(d.from) }) : t("a_created");
     case "status": return t("a_status", { to: t("st_" + d.to) });
     case "round": return t("a_round", { n: d.n, of: d.of });
     case "link": return `${t("a_link")} <a class="ltr" href="${esc(d.url)}" target="_blank" rel="noopener noreferrer">${esc(d.label || d.url)}</a>`;
@@ -665,6 +674,8 @@ function activityText(a) {
     case "note": return esc(d.text);
     case "sent": return t("a_sent", { kind: t(d.kind || "invoice"), to: esc(d.to || "") });
     case "accepted": return `<b>${t("a_accepted", { name: esc(d.name || "") })}</b>`;
+    case "reminder": return t(d.upcoming ? "a_reminder_soon" : d.auto ? "a_reminder_auto" : "a_reminder", { amt: money(d.amount || 0), to: esc(d.to || "") });
+    case "repeated": return t("a_repeated", { code: esc(d.code || ""), d: fdate(d.start) });
     default: return esc(a.kind);
   }
 }
@@ -812,7 +823,7 @@ function moneyView() {
     const p = P(x.projectId), c = clientOf(p);
     return `<div class="ri"><div class="txt"><a href="#project/${p.id}">${esc(p.title)}</a><span class="hint">${c ? esc(c.name) + " · " : ""}${esc(payLabel(x))} · ${x.paidAt ? t("paid_on", { d: fdate(x.paidAt) }) + (x.method ? " · " + t("m_" + x.method) : "") : `${t("due")} ${fdate(x.dueDate)}`}</span></div>
       <span class="amt">${money(x.amount)}</span>${payBadge(x)}
-      ${x.paidAt ? "" : `<div class="acts">${waBtn(p.id, "reminder")}<button class="btn btn-ghost btn-sm" data-act="markPaid" data-id="${x.id}">${t("mark_paid")}</button></div>`}</div>`;
+      ${x.paidAt ? "" : `<div class="acts">${waBtn(p.id, "reminder")}${canEmailReminder(x, p) ? remindBtn(x) : ""}<button class="btn btn-ghost btn-sm" data-act="markPaid" data-id="${x.id}">${t("mark_paid")}</button></div>`}</div>`;
   }).join("");
   return `
     <div class="toolbar"><h1>${t("nav_money")}</h1>
@@ -873,6 +884,7 @@ function settingsView() {
             </div>
             <div><button class="btn btn-primary" type="submit">${t("save")}</button></div>
           </form></section>
+        ${remindersPanel()}
         ${calendarPanel()}
         <section class="panel"><h2 style="font-size:16px">${t("your_data")}</h2>
           <span class="hint">${t("data_hint")}</span>
@@ -890,6 +902,20 @@ function settingsView() {
         </section>
       </div>
     </div>`;
+}
+
+function remindersPanel() {
+  const me = D().me, r = normalizeReminders(me.reminders);
+  const num = (name, lo, hi, label) => `<div class="field"><label for="r_${name}">${label}</label><input id="r_${name}" class="mono" name="${name}" type="number" min="${lo}" max="${hi}" value="${r[name]}"></div>`;
+  return `<section class="panel"><h2 style="font-size:16px">${t("reminders")}</h2>
+    ${me.mailReady ? "" : `<div class="banner warn"><span>${t("reminders_need_email")}</span></div>`}
+    <form data-form="reminders">
+      <label class="check"><input type="checkbox" name="digest" ${r.digest ? "checked" : ""}><span>${t("rem_digest")}</span></label>
+      <label class="check"><input type="checkbox" name="clients" ${r.clients ? "checked" : ""}><span>${t("rem_clients")}</span></label>
+      <div class="grid2">${num("before", 0, 14, t("rem_before"))}${num("after", 0, 60, t("rem_after"))}${num("every", 1, 60, t("rem_every"))}${num("max", 1, 10, t("rem_max"))}</div>
+      <span class="hint">${t("rem_hint")}</span>
+      <div><button class="btn btn-primary" type="submit">${t("save")}</button></div>
+    </form></section>`;
 }
 
 function calendarPanel() {
@@ -1106,6 +1132,12 @@ function projectForm(id, { clientId } = {}) {
         <div class="field"><label for="pRev">${t("f_revisionsAllowed")}</label><input id="pRev" name="revisionsAllowed" type="number" min="0" max="50" value="${p ? p.revisionsAllowed : me.revisions}"></div>
       </div>
       <span class="hint">${t(p ? "fee_edit_hint" : "new_project_hint")}</span>
+      <div class="grid2">
+        <div class="field"><label for="pRepeat">${t("f_repeat")}</label><select id="pRepeat" name="repeat"><option value="">${t("repeat_none")}</option>${REPEATS.map(r => `<option value="${r}" ${p?.repeat === r ? "selected" : ""}>${t("repeat_" + r)}</option>`).join("")}</select></div>
+        <div class="field"><label for="pUntil">${t("f_repeatUntil")}</label><input id="pUntil" name="repeatUntil" type="date" value="${p?.repeatUntil || ""}"></div>
+      </div>
+      <span class="hint">${t("repeat_hint")}</span>
+      <label class="check"><input type="checkbox" name="noReminders" ${p?.noReminders ? "checked" : ""}><span>${t("no_reminders")}</span></label>
       <div class="field"><label for="pNotes">${t("f_notes")}</label><textarea id="pNotes" name="notes" maxlength="8000">${esc(p?.notes)}</textarea></div>
       ${mfoot(p ? t("save") : t("create_project"))}
     </form>`);
@@ -1303,6 +1335,11 @@ const ACTS = {
       <div class="modal-actions"><button class="btn btn-danger" type="submit">${t("delete_account")}</button><button class="btn btn-ghost" type="button" data-act="close">${t("cancel")}</button></div></form>`);
   },
   confirmYes: () => S.confirm?.(),
+  remind: el => mutate("POST", `/payments/${el.dataset.id}/remind`, {}, t("reminder_sent")),
+  repeatNow: async el => {
+    const j = await mutate("POST", `/projects/${el.dataset.id}/repeat-now`, {}, t("repeat_created"));
+    if (j) go(`project/${j.id}`);
+  },
   editItem: el => itemForm(num(el.dataset.id)),
   delItem: async el => { if (await mutate("DELETE", `/items/${el.dataset.id}`, undefined, t("deleted"))) closeModal(); },
   sendDoc: el => sendDocModal(num(el.dataset.id)),
@@ -1395,6 +1432,7 @@ const FORMS = {
     const body = {
       title: o.title, clientId: num(o.clientId), type: o.type, status: o.status, startDate: o.startDate || null, dueDate: o.dueDate || null,
       sessionAt: o.sessionAt ? o.sessionAt.slice(0, 16) : null, folderUrl: o.folderUrl,
+      repeat: o.repeat || "", repeatUntil: o.repeatUntil || null, noReminders: !!o.noReminders,
       fee: Number(o.fee || 0), revisionsAllowed: Number(o.revisionsAllowed || 0), notes: o.notes,
     };
     if (!id) body.depositPct = Number(o.depositPct || 0);
@@ -1448,6 +1486,10 @@ const FORMS = {
     await mutate("POST", `/projects/${form.dataset.id}/notes`, { text: o.text });
   },
   async profile(o) { await mutate("PATCH", "/me", o, t("saved")); },
+  async reminders(o) {
+    const n = k => Number(o[k]);
+    await mutate("PATCH", "/me", { reminders: { digest: !!o.digest, clients: !!o.clients, before: n("before"), after: n("after"), every: n("every"), max: n("max") } }, t("saved"));
+  },
   async style(o) {
     await mutate("PATCH", "/me", { business: o.business, brand: brandFromForm(o) }, t("style_saved"));
   },

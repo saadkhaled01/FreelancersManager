@@ -10,7 +10,8 @@ import {
 import { createGoogle } from "./google.js";
 import { seedExamples } from "./seed.js";
 import { createMailer, resetEmail, docEmail, acceptedEmail } from "./mail.js";
-import { docData, itemTotals } from "../app/doc-data.js";
+import { docData, itemTotals, addPeriod, daysBetween } from "../app/doc-data.js";
+import { createJobs, JobError } from "./jobs.js";
 import { buildIcs } from "./ics.js";
 import crypto from "node:crypto";
 
@@ -28,7 +29,7 @@ const CSP = [
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const BODY_LIMIT = 5 * 1024 * 1024;
 
-export function createApp(db, { secureCookies = false, trustProxy = false, appUrl = "", mailer = createMailer(), google: googleCfg = {} } = {}) {
+export function createApp(db, { secureCookies = false, trustProxy = false, appUrl = "", mailer = createMailer(), google: googleCfg = {}, schedule = false } = {}) {
   setInterval(() => auth.pruneSessions(db), 6 * 3600e3).unref();
   const google = createGoogle(db, { appUrl, ...googleCfg });
   const snap = userId => {
@@ -49,6 +50,12 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
       deliverables: d.deliverables.filter(x => x.projectId === project.id),
       items: d.items.filter(x => x.projectId === project.id),
     });
+  }
+  const jobs = createJobs({ db, mailer, appUrl, buildDoc: (u, p) => buildDoc(u, p), shareToken: (u, p) => shareToken(u, p), repeatProject: (u, p, d) => repeatProject(u, p, d) });
+  if (schedule) {
+    // Each user's jobs run once a day after 9:00 their time; checking every 15 minutes is plenty.
+    setTimeout(() => jobs.runAll().catch(e => console.error("Daily jobs:", e)), 5000).unref();
+    setInterval(() => jobs.runAll().catch(e => console.error("Daily jobs:", e)), 15 * 60e3).unref();
   }
   const shareToken = (userId, projectId) => {
     const p = owned(db, "projects", userId, projectId);
@@ -72,7 +79,10 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
     return xff ? String(xff).split(",").pop().trim() : req.socket.remoteAddress;
   };
 
-  return async function handle(req, res) {
+  handle.jobs = jobs;
+  return handle;
+
+  async function handle(req, res) {
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Referrer-Policy", "same-origin");
     res.setHeader("Content-Security-Policy", CSP);
@@ -87,7 +97,7 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
       console.error(e);
       return send(res, 500, { error: "server" });
     }
-  };
+  }
 
   async function api(req, res, url) {
     const method = req.method;
@@ -203,6 +213,28 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
     }
     if (parts[0] === "projects" && parts[2] === "email" && method === "POST") {
       await emailDoc(userId, Number(parts[1]), body);
+      return reply();
+    }
+    if (parts[0] === "projects" && parts[2] === "repeat-now" && method === "POST") {
+      const id = tx(db, () => {
+        const p = owned(db, "projects", userId, parts[1]);
+        if (!p.repeat) throw new HttpError(400, "not_recurring");
+        const start = p.repeat_next || today();
+        const newId = repeatProject(userId, p.id, start);
+        db.prepare("UPDATE projects SET repeat_next = ? WHERE id = ?").run(addPeriod(start, p.repeat), p.id);
+        return newId;
+      });
+      return reply({ id });
+    }
+    if (parts[0] === "payments" && parts[2] === "remind" && method === "POST") {
+      const pay = owned(db, "payments", userId, parts[1]);
+      if (pay.paid_at) throw new HttpError(400, "already_paid");
+      try { await jobs.sendReminder(userId, pay.id, today(), { manual: true }); }
+      catch (e) {
+        if (e instanceof JobError) throw new HttpError(400, e.message);
+        console.error("Reminder failed:", e.message);
+        throw new HttpError(502, "mail_failed");
+      }
       return reply();
     }
     if (parts[0] === "projects" && parts[2] === "duplicate" && method === "POST") {
@@ -420,6 +452,7 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
       status: "lead", revisions_allowed: u.revisions, tax_rate: u.tax_rate || 0, ...values,
       user_id: userId, code: nextCode(db, userId), status_at: t, created_at: t, updated_at: t,
     };
+    if (row.repeat && !row.repeat_next) row.repeat_next = firstRepeat(row.start_date, row.repeat);
     const id = insert(db, "projects", row);
     const pct = Number.isInteger(body.depositPct) && body.depositPct >= 0 && body.depositPct <= 100 ? body.depositPct : u.deposit_pct;
     for (const p of defaultPayments(row.fee || 0, pct, row.start_date, row.due_date))
@@ -465,6 +498,11 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
     if (table === "clients") values.updated_at = t;
     if (table === "projects") {
       values.updated_at = t;
+      if ("repeat" in values) {
+        if (!values.repeat) values.repeat_next = null;
+        else if (!("repeat_next" in values) && (values.repeat !== old.repeat || !old.repeat_next))
+          values.repeat_next = firstRepeat(values.start_date ?? old.start_date, values.repeat);
+      }
       // With line items the fee is calculated, never typed.
       if ("fee" in values && db.prepare("SELECT 1 FROM items WHERE project_id = ?").get(old.id)) delete values.fee;
       if (values.status && values.status !== old.status) {
@@ -492,6 +530,47 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
     }
     if (table === "payments") settle(userId, old.project_id);
     if (table === "projects" && values.status === "delivered") settle(userId, old.id);
+  }
+
+  /* A series' next cycle: one period after its start, moved forward until it's after today. */
+  function firstRepeat(start, repeat) {
+    let next = addPeriod(start || today(), repeat);
+    for (let i = 0; i < 520 && next <= today(); i++) next = addPeriod(next, repeat);
+    return next;
+  }
+
+  /* Creates one cycle of a recurring project starting on `start`: same client, items, deliverables and payments,
+     dates shifted by the same amount, title marked with the period, and Booked. The series keeps its settings. */
+  function repeatProject(userId, sourceId, start) {
+    const src = owned(db, "projects", userId, sourceId);
+    const u = db.prepare("SELECT lang FROM users WHERE id = ?").get(userId);
+    const anchor = src.start_date || src.created_at.slice(0, 10);
+    const shift = daysBetween(anchor, start);
+    const move = d => (d ? addDaysIso(d, shift) : null);
+    const label = new Intl.DateTimeFormat(u.lang === "ar" ? "ar-EG-u-nu-latn" : "en-GB",
+      src.repeat === "weekly" ? { day: "numeric", month: "short" } : { month: "long", year: "numeric" }).format(new Date(`${start}T12:00:00Z`));
+    const t = now();
+    const id = insert(db, "projects", {
+      user_id: userId, client_id: src.client_id, code: nextCode(db, userId), title: `${src.title} · ${label}`.slice(0, 160), type: src.type,
+      status: "booked", start_date: start, due_date: move(src.due_date),
+      session_at: src.session_at ? `${move(src.session_at.slice(0, 10))}${src.session_at.slice(10)}` : null,
+      fee: src.fee, discount: src.discount, tax_rate: src.tax_rate, revisions_allowed: src.revisions_allowed, revisions_used: 0,
+      links: "[]", notes: src.notes, folder_url: src.folder_url, no_reminders: src.no_reminders, series_id: src.id,
+      status_at: t, created_at: t, updated_at: t,
+    });
+    for (const d of db.prepare("SELECT label, due_date FROM deliverables WHERE project_id = ? ORDER BY id").all(src.id))
+      insert(db, "deliverables", { user_id: userId, project_id: id, label: d.label, due_date: move(d.due_date), done: 0, created_at: t });
+    for (const i of db.prepare("SELECT label, qty, unit_price FROM items WHERE project_id = ? ORDER BY id").all(src.id))
+      insert(db, "items", { user_id: userId, project_id: id, ...i, created_at: t });
+    const pays = db.prepare("SELECT kind, label, amount, due_date FROM payments WHERE project_id = ? ORDER BY id").all(src.id);
+    if (pays.length) for (const x of pays) insert(db, "payments", { user_id: userId, project_id: id, kind: x.kind, label: x.label, amount: x.amount, due_date: move(x.due_date) || start, created_at: t });
+    else {
+      const dep = db.prepare("SELECT deposit_pct FROM users WHERE id = ?").get(userId).deposit_pct;
+      for (const x of defaultPayments(src.fee, dep, start, move(src.due_date))) insert(db, "payments", { ...x, user_id: userId, project_id: id, created_at: t });
+    }
+    log(db, userId, id, "created", { from: src.code });
+    log(db, userId, src.id, "repeated", { code: db.prepare("SELECT code FROM projects WHERE id = ?").get(id).code, start });
+    return id;
   }
 
   /* With line items, the project fee is their total (after discount and tax). */
@@ -589,6 +668,10 @@ export function createApp(db, { secureCookies = false, trustProxy = false, appUr
 }
 
 const str = v => (typeof v === "string" && v.length < 40 ? v : "");
+const addDaysIso = (d, n) => {
+  const [y, m, day] = d.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, day + n)).toISOString().slice(0, 10);
+};
 
 /* ---------- http helpers ---------- */
 function send(res, status, obj) {

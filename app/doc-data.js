@@ -9,6 +9,42 @@ export const BRAND_DEFAULT = { color: "#1E6F5C", layout: "classic", font: "moder
 
 const r2 = n => Math.round(n * 100) / 100;
 
+/* Fills {placeholders} in a message template. A line whose placeholder has no value (e.g. no InstaPay set) is dropped. */
+export function fillText(tpl, vars) {
+  return tpl.split("\n").filter(line => {
+    const keys = [...line.matchAll(/\{(\w+)\}/g)].map(m => m[1]);
+    return !keys.some(k => k in vars && !vars[k]);
+  }).join("\n").replace(/\{(\w+)\}/g, (m, k) => (k in vars ? vars[k] : m)).replace(/\n{3,}/g, "\n\n").trim();
+}
+
+/* Recurring projects: how far apart each cycle starts. Months keep the day, clamped to the month's last day. */
+export const REPEATS = ["weekly", "monthly", "quarterly"];
+export function addPeriod(date, repeat) {
+  const [y, m, d] = date.split("-").map(Number);
+  if (repeat === "weekly") {
+    const t = new Date(Date.UTC(y, m - 1, d + 7));
+    return t.toISOString().slice(0, 10);
+  }
+  const months = repeat === "quarterly" ? 3 : 1;
+  const ty = y + Math.floor((m - 1 + months) / 12), tm = (m - 1 + months) % 12;
+  const last = new Date(Date.UTC(ty, tm + 1, 0)).getUTCDate();
+  return `${ty}-${String(tm + 1).padStart(2, "0")}-${String(Math.min(d, last)).padStart(2, "0")}`;
+}
+export function daysBetween(a, b) {
+  const t = s => Date.UTC(...s.split("-").map((n, i) => Number(n) - (i === 1 ? 1 : 0)));
+  return Math.round((t(b) - t(a)) / 864e5);
+}
+/* Payment reminder settings, with defaults: summary email on, client emails off. */
+export const REMINDER_DEFAULT = { digest: true, clients: false, before: 0, after: 1, every: 7, max: 3 };
+export function normalizeReminders(r) {
+  r = r && typeof r === "object" ? r : {};
+  const int = (v, lo, hi, d) => (Number.isInteger(v) && v >= lo && v <= hi ? v : d);
+  return {
+    digest: r.digest !== false, clients: r.clients === true,
+    before: int(r.before, 0, 14, 0), after: int(r.after, 0, 60, 1), every: int(r.every, 1, 60, 7), max: int(r.max, 1, 10, 3),
+  };
+}
+
 /* Totals from line items: subtotal − discount, then tax on the discounted amount. Shared by server, app and documents. */
 export function itemTotals(items, discount = 0, taxRate = 0) {
   const subtotal = r2(items.reduce((s, i) => s + i.qty * i.unitPrice, 0));

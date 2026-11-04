@@ -143,6 +143,16 @@ const MIGRATIONS = [
   "ALTER TABLE projects ADD COLUMN accepted_by TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE projects ADD COLUMN accepted_ip TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE users ADD COLUMN tax_rate REAL NOT NULL DEFAULT 0",
+  "ALTER TABLE users ADD COLUMN reminders TEXT NOT NULL DEFAULT '{}'",
+  "ALTER TABLE users ADD COLUMN last_daily TEXT",
+  "ALTER TABLE payments ADD COLUMN reminders_sent INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE payments ADD COLUMN last_reminder TEXT",
+  "ALTER TABLE payments ADD COLUMN before_sent INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE projects ADD COLUMN no_reminders INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE projects ADD COLUMN repeat TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE projects ADD COLUMN repeat_next TEXT",
+  "ALTER TABLE projects ADD COLUMN repeat_until TEXT",
+  "ALTER TABLE projects ADD COLUMN series_id INTEGER",
 ];
 
 export function openDb(file) {

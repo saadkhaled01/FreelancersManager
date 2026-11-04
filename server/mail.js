@@ -58,7 +58,7 @@ const DOC = {
 };
 const CUR = { EGP: { ar: "ج.م", en: "EGP" } };
 
-export function docEmail({ lang, doc, message, link, logoUrl }) {
+export function docEmail({ lang, doc, message, link, logoUrl, greet: withGreeting = true, subjectPrefix = "" }) {
   const c = DOC[lang] || DOC.en;
   const who = doc.from.business || doc.from.name;
   const kind = c[doc.kind];
@@ -67,7 +67,7 @@ export function docEmail({ lang, doc, message, link, logoUrl }) {
   const color = doc.brand.color;
   const total = doc.kind === "quote" ? doc.fee : doc.owed;
   const label = doc.kind === "quote" ? c.total : c.due;
-  const greet = doc.client?.name ? c.hello(doc.client.name.split(/\s+/)[0]) : "";
+  const greet = withGreeting && doc.client?.name ? c.hello(doc.client.name.split(/\s+/)[0]) : "";
   const text = [greet, message, `${kind} ${doc.code} · ${doc.project.title}`, `${label}: ${amount(total)}`, link, "", who].filter(s => s !== undefined).join("\n").replace(/\n{3,}/g, "\n\n");
   const dir = lang === "ar" ? "rtl" : "ltr", align = lang === "ar" ? "right" : "left";
   const html = `<div dir="${dir}" style="background:#EEEBE3;padding:24px 12px;font-family:system-ui,-apple-system,Segoe UI,Tahoma,sans-serif;color:#221E19">
@@ -87,7 +87,7 @@ export function docEmail({ lang, doc, message, link, logoUrl }) {
     </td></tr>
     <tr><td style="padding:18px 28px 26px;text-align:${align};font-size:12px;color:#77705F">${escHtml(who)}${doc.from.email ? ` · <span dir="ltr">${escHtml(doc.from.email)}</span>` : ""}</td></tr>
   </table></div>`;
-  return { subject: c.subject(kind, doc.code, who), text, html };
+  return { subject: (subjectPrefix ? `${subjectPrefix}: ` : "") + c.subject(kind, doc.code, who), text, html };
 }
 
 function inkFor(hex) {
@@ -104,4 +104,33 @@ export function acceptedEmail({ lang, name, client, title, code, link }) {
     : `Hi ${name},\n\n${client} accepted your quote for "${title}" (${code}). The project has moved to Booked.${link ? `\n\n${link}` : ""}`;
   const html = `<div dir="${ar ? "rtl" : "ltr"}" style="font-family:system-ui,sans-serif;font-size:15px;line-height:1.6;color:#221E19">${escHtml(text).replace(/\n/g, "<br>")}</div>`;
   return { subject, text, html };
+}
+
+/* The user's daily summary: overdue and upcoming payments, reminders sent, recurring projects created. */
+export function digestEmail({ lang, name, currency, date, appUrl, overdue, soon, sent, projects }) {
+  const ar = lang === "ar";
+  const cur = CUR[currency]?.[lang] || currency;
+  const amount = n => `${(Math.round(n * 100) / 100).toLocaleString("en-US")} ${cur}`;
+  const sum = list => list.reduce((s, x) => s + x.amount, 0);
+  const T = ar
+    ? { subject: `ملخص النهارده: ${overdue.length} دفعة متأخرة`, hello: `صباح الخير يا ${name}،`, overdue: "دفعات متأخرة", soon: "مستحقة خلال أسبوع",
+        sent: "تذكيرات اتبعتت للعملاء", created: "مشاريع متكررة اتعملت", open: "افتح التطبيق", due: "مستحقة" }
+    : { subject: `Today: ${overdue.length} overdue payment${overdue.length === 1 ? "" : "s"}`, hello: `Good morning, ${name}.`, overdue: "Overdue payments", soon: "Due this week",
+        sent: "Reminders sent to clients", created: "Recurring projects created", open: "Open the app", due: "due" };
+  if (!overdue.length) T.subject = ar ? "ملخص النهارده" : "Your daily summary";
+  const line = x => `${x.code} · ${x.title}${x.client_name ? ` · ${x.client_name}` : ""}: ${amount(x.amount)} (${T.due} ${x.due_date})`;
+  const sections = [
+    overdue.length && [`${T.overdue} (${amount(sum(overdue))})`, overdue.map(line)],
+    soon.length && [`${T.soon} (${amount(sum(soon))})`, soon.map(line)],
+    sent.length && [T.sent, sent.map(x => `${x.code} · ${x.to}: ${amount(x.amount)}`)],
+    projects.length && [T.created, projects.map(p => `${p.code} · ${p.title}`)],
+  ].filter(Boolean);
+  const text = [T.hello, "", ...sections.flatMap(([h, rows]) => [h, ...rows.map(r => `- ${r}`), ""]), appUrl ? `${T.open}: ${appUrl}/#money` : ""].join("\n").trim();
+  const dir = ar ? "rtl" : "ltr";
+  const html = `<div dir="${dir}" style="font-family:system-ui,-apple-system,Segoe UI,Tahoma,sans-serif;font-size:14px;line-height:1.6;color:#221E19;max-width:560px">
+    <p>${escHtml(T.hello)}</p>
+    ${sections.map(([h, rows]) => `<h3 style="font-size:15px;margin:16px 0 6px">${escHtml(h)}</h3><ul style="margin:0;padding-${ar ? "right" : "left"}:18px">${rows.map(r => `<li>${escHtml(r)}</li>`).join("")}</ul>`).join("")}
+    ${appUrl ? `<p style="margin-top:18px"><a href="${escHtml(appUrl)}/#money" style="color:#1E6F5C;font-weight:700">${escHtml(T.open)}</a></p>` : ""}
+  </div>`;
+  return { subject: T.subject, text, html };
 }

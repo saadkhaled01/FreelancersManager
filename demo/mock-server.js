@@ -2,10 +2,10 @@
    It answers the app's /api calls with the same rules as server/app.js (project codes, deposit and balance,
    revision rounds, line items and tax, auto-done, sharing, quote acceptance, backups) and keeps everything in
    this browser's localStorage. Nothing leaves the browser: no email, Google Calendar or calendar feed. */
-import { docData, itemTotals } from "../app/doc-data.js";
+import { docData, itemTotals, addPeriod, daysBetween, normalizeReminders, REPEATS } from "../app/doc-data.js";
 import { EXAMPLES } from "../server/examples.js";
 
-const KEY = "fm_demo_v1";
+const KEY = "fm_demo_v2";
 const STATUSES = ["lead", "booked", "active", "with_client", "revising", "delivered", "archived"];
 const METHODS = ["", "instapay", "vcash", "cash", "bank", "other"];
 const r2 = n => Math.round(n * 100) / 100;
@@ -92,6 +92,9 @@ const SPECS = {
       return v.map(l => { if (!/^https?:\/\/\S+$/i.test(l?.url || "")) throw bad("links"); return { url: l.url, label: String(l.label || "").slice(0, 80), at: l.at || today() }; });
     },
     notes: v => str(v, 8000, "notes"),
+    noReminders: v => !!v,
+    repeat: v => { if (!["", ...REPEATS].includes(v || "")) throw bad("repeat"); return v || ""; },
+    repeatNext: v => date(v, "repeatNext"), repeatUntil: v => date(v, "repeatUntil"),
   },
   deliverables: { projectId: req(v => Number(v)), label: req(v => str(v, 200, "label", true)), dueDate: v => date(v, "dueDate"), done: v => !!v },
   items: {
@@ -105,11 +108,11 @@ const SPECS = {
     method: v => { if (!METHODS.includes(v || "")) throw bad("method"); return v || ""; }, ref: v => str(v, 80, "ref"),
   },
 };
-const ME_FIELDS = ["name", "business", "phone", "lang", "currency", "instapay", "vcash", "depositPct", "revisions", "templates", "tz", "brand", "taxRate"];
+const ME_FIELDS = ["name", "business", "phone", "lang", "currency", "instapay", "vcash", "depositPct", "revisions", "templates", "tz", "brand", "taxRate", "reminders"];
 
 function publicMe(u) {
   const { pass, logo, ...me } = u;
-  return { ...me, logo, logoVersion: logo ? String(logo.length) : null, google: { available: false, connected: false }, mailReady: false };
+  return { ...me, reminders: normalizeReminders(me.reminders), logo, logoVersion: logo ? String(logo.length) : null, google: { available: false, connected: false }, mailReady: false };
 }
 function snapshot(uid) {
   const u = db.users.find(x => x.id === uid);
@@ -160,6 +163,8 @@ function seedDemoAccount() {
   Object.assign(u, { business: "استوديو نور", phone: "01055554444", instapay: "noor@instapay", vcash: "01099998888", taxRate: 14,
     brand: { color: "#1E6F5C", layout: "classic", font: "modern", accent: "solid", address: "المعادي، القاهرة", website: "noor.studio", taxId: "", showPay: true, footer: {}, intro: {} } });
   seedExamples(u.id, "ar");
+  const reels = db.projects.find(p => p.userId === u.id && p.status === "active");
+  if (reels) Object.assign(reels, { repeat: "monthly", repeatNext: firstRepeat(reels.startDate, "monthly") }); // a retainer to show recurring projects
   db.session = u.id; // start signed in
 }
 
@@ -169,14 +174,53 @@ function createProject(uid, v, body) {
   const p = {
     id: id(), userId: uid, clientId: null, title: "", type: "", status: "lead", startDate: null, dueDate: null, sessionAt: null, folderUrl: "",
     fee: 0, discount: 0, taxRate: u.taxRate || 0, revisionsAllowed: u.revisions, revisionsUsed: 0, links: [], notes: "",
-    shareToken: null, acceptedAt: null, acceptedBy: "", ...v, code: nextCode(uid), statusAt: t, createdAt: t, updatedAt: t,
+    shareToken: null, acceptedAt: null, acceptedBy: "", noReminders: false, repeat: "", repeatNext: null, repeatUntil: null, seriesId: null,
+    ...v, code: nextCode(uid), statusAt: t, createdAt: t, updatedAt: t,
   };
+  if (p.repeat && !p.repeatNext) p.repeatNext = firstRepeat(p.startDate, p.repeat);
   db.projects.push(p);
   const pct = Number.isInteger(body.depositPct) && body.depositPct >= 0 && body.depositPct <= 100 ? body.depositPct : u.depositPct;
   for (const x of defaultPayments(p.fee, pct, p.startDate, p.dueDate)) db.payments.push({ id: id(), userId: uid, projectId: p.id, label: "", paidAt: null, method: "", ref: "", createdAt: t, ...x });
   log(uid, p.id, "created");
   return p.id;
 }
+/* Recurring projects, as in server/app.js. */
+function firstRepeat(start, repeat) {
+  let next = addPeriod(start || today(), repeat);
+  for (let i = 0; i < 520 && next <= today(); i++) next = addPeriod(next, repeat);
+  return next;
+}
+function shiftDate(d, n) { const [y, m, dd] = d.split("-").map(Number); return new Date(Date.UTC(y, m - 1, dd + n)).toISOString().slice(0, 10); }
+function repeatProject(uid, srcId, start) {
+  const src = owned("projects", uid, srcId), u = db.users.find(x => x.id === uid), t = now();
+  const shift = daysBetween(src.startDate || src.createdAt.slice(0, 10), start);
+  const move = d => (d ? shiftDate(d, shift) : null);
+  const label = new Intl.DateTimeFormat(u.lang === "ar" ? "ar-EG-u-nu-latn" : "en-GB", src.repeat === "weekly" ? { day: "numeric", month: "short" } : { month: "long", year: "numeric" }).format(new Date(`${start}T12:00:00Z`));
+  const pid = id();
+  db.projects.push({
+    ...src, id: pid, code: nextCode(uid), title: `${src.title} · ${label}`.slice(0, 160), status: "booked", startDate: start, dueDate: move(src.dueDate),
+    sessionAt: src.sessionAt ? `${move(src.sessionAt.slice(0, 10))}${src.sessionAt.slice(10)}` : null, revisionsUsed: 0, links: [], shareToken: null,
+    acceptedAt: null, acceptedBy: "", repeat: "", repeatNext: null, repeatUntil: null, seriesId: src.id, statusAt: t, createdAt: t, updatedAt: t,
+  });
+  for (const d of db.deliverables.filter(x => x.projectId === src.id)) db.deliverables.push({ id: id(), userId: uid, projectId: pid, label: d.label, done: false, dueDate: move(d.dueDate), createdAt: t });
+  for (const i of db.items.filter(x => x.projectId === src.id)) db.items.push({ id: id(), userId: uid, projectId: pid, label: i.label, qty: i.qty, unitPrice: i.unitPrice, createdAt: t });
+  const pays = db.payments.filter(x => x.projectId === src.id);
+  const fresh = pays.length ? pays.map(x => ({ kind: x.kind, label: x.label, amount: x.amount, dueDate: move(x.dueDate) || start })) : defaultPayments(src.fee, u.depositPct, start, move(src.dueDate));
+  for (const x of fresh) db.payments.push({ id: id(), userId: uid, projectId: pid, label: "", paidAt: null, method: "", ref: "", createdAt: t, ...x });
+  log(uid, pid, "created", { from: src.code });
+  log(uid, src.id, "repeated", { code: db.projects.find(x => x.id === pid).code, start });
+  return pid;
+}
+/* The demo has no daily job: catch up recurring cycles whenever it opens. */
+function catchUpRecurring() {
+  const date = today();
+  for (const s of db.projects.filter(p => p.repeat && p.repeatNext && p.repeatNext <= date)) {
+    let next = s.repeatNext;
+    for (let i = 0; i < 24 && next <= date && (!s.repeatUntil || next <= s.repeatUntil); i++) { repeatProject(s.userId, s.id, next); next = addPeriod(next, s.repeat); }
+    s.repeatNext = next;
+  }
+}
+
 function recalc(uid, pid) {
   const p = owned("projects", uid, pid);
   const its = db.items.filter(i => i.projectId === p.id);
@@ -234,6 +278,10 @@ function patch(table, uid, rid, body) {
   if (table === "projects") {
     v.updatedAt = t;
     if ("fee" in v && db.items.some(i => i.projectId === old.id)) delete v.fee;
+    if ("repeat" in v) {
+      if (!v.repeat) v.repeatNext = null;
+      else if (!("repeatNext" in v) && (v.repeat !== old.repeat || !old.repeatNext)) v.repeatNext = firstRepeat(v.startDate ?? old.startDate, v.repeat);
+    }
     if (v.status && v.status !== old.status) {
       v.statusAt = t;
       if (old.status === "with_client" && v.status === "revising" && !("revisionsUsed" in v)) {
@@ -394,6 +442,15 @@ function route(method, path, body) {
     return reply();
   }
   if (parts[0] === "projects" && parts[2] === "email") throw new ApiError(400, "mail_unavailable");
+  if (parts[0] === "payments" && parts[2] === "remind") throw new ApiError(400, "mail_unavailable");
+  if (parts[0] === "projects" && parts[2] === "repeat-now" && method === "POST") {
+    const p = owned("projects", uid, parts[1]);
+    if (!p.repeat) throw new ApiError(400, "not_recurring");
+    const start = p.repeatNext || today();
+    const pid = repeatProject(uid, p.id, start);
+    p.repeatNext = addPeriod(start, p.repeat);
+    return reply({ id: pid });
+  }
   if (parts[0] === "projects" && parts[2] === "duplicate" && method === "POST") return reply({ id: duplicate(uid, parts[1], body) });
 
   const table = parts[0];
@@ -407,6 +464,8 @@ function route(method, path, body) {
 /* Answers fetch("/api/…") in this page; everything else goes to the real network. */
 export function install() {
   load();
+  catchUpRecurring();
+  save();
   const realFetch = window.fetch.bind(window);
   window.fetch = async (input, init = {}) => {
     const url = typeof input === "string" ? input : input.url;

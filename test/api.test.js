@@ -4,7 +4,7 @@ import http from "node:http";
 import { openDb } from "../server/db.js";
 import { createApp } from "../server/app.js";
 
-let server, base, gserver, gbase;
+let app, server, base, gserver, gbase;
 const outbox = [];
 const mailer = { configured: true, async send(m) { outbox.push(m); } };
 
@@ -50,10 +50,11 @@ before(async () => {
   gserver = http.createServer(fakeGoogle);
   await new Promise(r => gserver.listen(0, r));
   gbase = `http://127.0.0.1:${gserver.address().port}`;
-  server = http.createServer(createApp(openDb(":memory:"), {
+  app = createApp(openDb(":memory:"), {
     trustProxy: true, appUrl: "https://fm.example", mailer,
     google: { clientId: "cid", clientSecret: "secret", secretKey: "test-secret-key", authUrl: gbase + "/auth", tokenUrl: gbase + "/token", apiBase: gbase, revokeUrl: gbase + "/revoke", syncDelay: 20 },
-  }));
+  });
+  server = http.createServer(app);
   await new Promise(r => server.listen(0, r));
   base = `http://127.0.0.1:${server.address().port}`;
 });
@@ -498,4 +499,92 @@ test("client accepts a quote from the shared link", async () => {
   assert.equal(proj.status, "booked");
   assert.equal(proj.acceptedBy, "Mona Adel");
   assert.ok(data.activity.some(x => x.kind === "accepted" && x.data.name === "Mona Adel"));
+});
+
+const meId = async a => (await a("GET", "/data")).body.data.me.id;
+const runDay = (userId, iso) => app.jobs.runAll({ at: new Date(iso), userId });
+
+test("recurring projects: monthly cycles created once, dates shifted, series ends", async () => {
+  const a = agent();
+  await signup(a, "repeat@example.com", { lang: "en" });
+  const uid = await meId(a);
+  const c = await a("POST", "/clients", { name: "Retainer Co" });
+  const p = await a("POST", "/projects", { title: "Monthly reels", clientId: c.body.id, status: "active", startDate: "2026-10-01", dueDate: "2026-10-20", fee: 3000, repeat: "monthly", depositPct: 50 });
+  await a("POST", "/items", { projectId: p.body.id, label: "Reel", qty: 4, unitPrice: 750 });
+  await a("POST", "/deliverables", { projectId: p.body.id, label: "4 reels", dueDate: "2026-10-18" });
+  let proj = (await a("GET", "/data")).body.data.projects.find(x => x.id === p.body.id);
+  assert.equal(proj.repeatNext, "2026-12-01", "next cycle is after today");
+  // Before 9:00 nothing runs; at 9:00 the December cycle is created, once.
+  assert.deepEqual(await runDay(uid, "2026-12-01T08:00:00Z"), {});
+  const r = await runDay(uid, "2026-12-01T09:30:00Z");
+  assert.equal(r[uid].created.length, 1);
+  assert.deepEqual(await runDay(uid, "2026-12-01T15:00:00Z"), {}, "already ran today");
+  let data = (await a("GET", "/data")).body.data;
+  const child = data.projects.find(x => x.id === r[uid].created[0]);
+  assert.equal(child.title, "Monthly reels · December 2026");
+  assert.equal(child.status, "booked");
+  assert.equal(child.seriesId, p.body.id);
+  assert.equal(child.startDate, "2026-12-01");
+  assert.equal(child.dueDate, "2026-12-20");
+  assert.equal(child.clientId, c.body.id);
+  assert.equal(child.fee, 3000);
+  assert.equal(data.items.filter(x => x.projectId === child.id).length, 1);
+  assert.equal(data.deliverables.find(x => x.projectId === child.id).dueDate, "2026-12-18");
+  assert.deepEqual(data.payments.filter(x => x.projectId === child.id).map(x => [x.kind, x.amount, x.dueDate]), [["deposit", 1500, "2026-12-01"], ["balance", 1500, "2026-12-20"]]);
+  assert.equal(data.projects.find(x => x.id === p.body.id).repeatNext, "2027-01-01");
+  // "Create next one now" makes January and moves the series on.
+  const now = await a("POST", `/projects/${p.body.id}/repeat-now`, {});
+  assert.equal(now.body.data.projects.find(x => x.id === now.body.id).title, "Monthly reels · January 2027");
+  assert.equal(now.body.data.projects.find(x => x.id === p.body.id).repeatNext, "2027-02-01");
+  // A server that was down catches up, but never past the end date.
+  await a("PATCH", `/projects/${p.body.id}`, { repeatUntil: "2027-03-15" });
+  const late = await runDay(uid, "2027-06-02T10:00:00Z");
+  assert.equal(late[uid].created.length, 2, "February and March only");
+  assert.equal((await a("POST", `/projects/${(await a("POST", "/projects", { title: "One-off" })).body.id}/repeat-now`, {})).status, 400);
+  await a("PATCH", `/projects/${p.body.id}`, { repeat: "" });
+  assert.equal((await a("GET", "/data")).body.data.projects.find(x => x.id === p.body.id).repeatNext, null);
+});
+
+test("payment reminders: heads-up, overdue cadence, limit, opt-out, summary", async () => {
+  const a = agent();
+  await signup(a, "remind@example.com", { lang: "en" });
+  const uid = await meId(a);
+  assert.deepEqual((await a("GET", "/data")).body.data.me.reminders, { digest: true, clients: false, before: 0, after: 1, every: 7, max: 3 });
+  assert.equal((await a("PATCH", "/me", { reminders: { clients: true, every: 0 } })).status, 400);
+  await a("PATCH", "/me", { instapay: "me@instapay", reminders: { digest: true, clients: true, before: 2, after: 1, every: 3, max: 2 } });
+  const c = await a("POST", "/clients", { name: "Late Payer", email: "client@example.com", lang: "en" });
+  const p = await a("POST", "/projects", { title: "Website", clientId: c.body.id, status: "active", startDate: "2030-01-10", dueDate: "2030-01-20", fee: 2000, depositPct: 50 });
+  const quiet = await a("POST", "/projects", { title: "Friend's logo", clientId: c.body.id, status: "active", startDate: "2030-01-10", fee: 500, noReminders: true });
+  assert.equal(quiet.body.data.projects.find(x => x.id === quiet.body.id).noReminders, true);
+  const sentTo = () => outbox.filter(m => m.to === "client@example.com");
+  outbox.length = 0;
+  let r = await runDay(uid, "2030-01-08T10:00:00Z"); // deposit due in 2 days
+  assert.equal(r[uid].sent.length, 1);
+  assert.match(sentTo()[0].subject, /^Payment due soon: Invoice FM-\d{4}-001 from Test$/);
+  assert.match(sentTo()[0].text, /me@instapay/);
+  assert.match(sentTo()[0].text, /https:\/\/fm\.example\/d\/[\w-]+\?lang=en/);
+  const digest = outbox.find(m => m.to === "remind@example.com");
+  assert.ok(digest && /Due this week/.test(digest.text), "summary to the freelancer");
+  outbox.length = 0;
+  r = await runDay(uid, "2030-01-11T10:00:00Z"); // 1 day late
+  assert.deepEqual(r[uid].sent.map(x => x.upcoming), [false], "first overdue reminder");
+  assert.match(sentTo()[0].subject, /^Payment reminder:/);
+  assert.equal((await runDay(uid, "2030-01-12T10:00:00Z"))[uid].sent.length, 0, "every 3 days");
+  assert.equal((await runDay(uid, "2030-01-14T10:00:00Z"))[uid].sent.length, 1, "second reminder");
+  r = await runDay(uid, "2030-01-18T10:00:00Z");
+  assert.deepEqual(r[uid].sent.map(x => x.upcoming), [true], "deposit hit the limit; balance gets its heads-up");
+  assert.ok(!sentTo().some(m => /Friend/.test(m.text)), "opted-out project never emailed");
+  const data = (await a("GET", "/data")).body.data;
+  const dep = data.payments.find(x => x.projectId === p.body.id && x.kind === "deposit");
+  assert.equal(dep.remindersSent, 2);
+  assert.equal(dep.lastReminder, "2030-01-14");
+  assert.equal(data.activity.filter(x => x.kind === "reminder").length, 4);
+  // Manual reminder: works with an email, explains when the client has none.
+  outbox.length = 0;
+  assert.equal((await a("POST", `/payments/${dep.id}/remind`, {})).status, 200);
+  assert.equal(sentTo().length, 1);
+  const c2 = await a("POST", "/clients", { name: "No Email" });
+  const p2 = await a("POST", "/projects", { title: "X", clientId: c2.body.id, status: "active", fee: 100 });
+  const pay2 = (await a("GET", "/data")).body.data.payments.find(x => x.projectId === p2.body.id);
+  assert.equal((await a("POST", `/payments/${pay2.id}/remind`, {})).body.error, "no_client_email");
 });

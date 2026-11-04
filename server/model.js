@@ -7,7 +7,7 @@ export const PAY_KINDS = ["deposit", "balance", "extra"];
 export const CURRENCIES = ["EGP", "USD", "EUR", "SAR", "AED", "KWD", "QAR", "GBP"];
 export const LANGS = ["ar", "en"];
 export { LAYOUTS, FONTS, ACCENTS } from "../app/doc-data.js";
-import { LAYOUTS, FONTS, ACCENTS } from "../app/doc-data.js";
+import { LAYOUTS, FONTS, ACCENTS, REPEATS, normalizeReminders } from "../app/doc-data.js";
 export const TEMPLATE_KINDS = ["quote", "delivery", "reminder", "thanks", "document"];
 
 export class HttpError extends Error {
@@ -40,6 +40,10 @@ export const SPECS = {
     fee: { col: "fee", type: "money" },
     discount: { col: "discount", type: "money" },
     taxRate: { col: "tax_rate", type: "pct" },
+    noReminders: { col: "no_reminders", type: "bool" },
+    repeat: { col: "repeat", type: "enum", values: ["", ...REPEATS] },
+    repeatNext: { col: "repeat_next", type: "date" },
+    repeatUntil: { col: "repeat_until", type: "date" },
     revisionsAllowed: { col: "revisions_allowed", type: "int", min: 0, max: 50 },
     revisionsUsed: { col: "revisions_used", type: "int", min: 0, max: 99 },
     links: { col: "links", type: "links" },
@@ -83,6 +87,7 @@ export const ME_SPEC = {
   templates: { col: "templates", type: "templates" },
   tz: { col: "tz", type: "tz" },
   brand: { col: "brand", type: "brand" },
+  reminders: { col: "reminders", type: "reminders" },
 };
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -152,6 +157,12 @@ function coerce(spec, key, v) {
         const at = typeof l?.at === "string" && DATE_RE.test(l.at) ? l.at : today();
         return { url, label, at };
       }));
+    }
+    case "reminders": {
+      if (!v || typeof v !== "object" || Array.isArray(v)) throw bad(key);
+      const n = normalizeReminders(v);
+      for (const k of ["before", "after", "every", "max"]) if (k in v && v[k] !== n[k]) throw bad(key);
+      return JSON.stringify(n);
     }
     case "tz":
       if (v == null || v === "") return "";
@@ -223,6 +234,7 @@ function mapRow(row) {
   if ("links" in o) o.links = JSON.parse(o.links || "[]");
   if ("data" in o) o.data = JSON.parse(o.data || "{}");
   if ("done" in o) o.done = !!o.done;
+  if ("noReminders" in o) o.noReminders = !!o.noReminders;
   return o;
 }
 
@@ -231,7 +243,7 @@ export function publicMe(u) {
     id: u.id, email: u.email, name: u.name, business: u.business, phone: u.phone,
     lang: u.lang, currency: u.currency, instapay: u.instapay, vcash: u.vcash,
     depositPct: u.deposit_pct, revisions: u.revisions, taxRate: u.tax_rate || 0, templates: JSON.parse(u.templates || "{}"),
-    calToken: u.cal_token || null, tz: u.tz || "",
+    calToken: u.cal_token || null, tz: u.tz || "", reminders: normalizeReminders(JSON.parse(u.reminders || "{}")),
     brand: JSON.parse(u.brand || "{}"),
     logoVersion: u.logo ? crypto.createHash("sha1").update(u.logo).digest("hex").slice(0, 10) : null,
   };

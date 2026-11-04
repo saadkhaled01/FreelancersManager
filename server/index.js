@@ -10,6 +10,7 @@ const server = http.createServer(createApp(db, {
   secureCookies: process.env.COOKIE_SECURE === "1",
   trustProxy: process.env.TRUST_PROXY === "1",
   appUrl: process.env.APP_URL || "",
+  schedule: true, // daily recurring projects, payment reminders and summary emails
   google: {
     clientId: process.env.GOOGLE_CLIENT_ID,
     clientSecret: process.env.GOOGLE_CLIENT_SECRET,
